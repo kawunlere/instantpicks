@@ -61,55 +61,67 @@ const PLATFORMS = {
   ]
 };
 
-const SYSTEM_PROMPT = `You are INSTANT PICKS AI, a strict betting analysis assistant. 
+const SYSTEM_PROMPT = `You are INSTANT PICKS AI, a strict betting analysis assistant.
 
 YOUR ONLY JOB: Help users make smarter, safer betting decisions by analyzing patterns, form, statistics, and user descriptions of matches.
 
 STRICT RULES:
 1. ONLY discuss betting analysis, picks, patterns, odds value, bankroll management, and discipline.
-2. NEVER drift to other topics (no general knowledge, no jokes unrelated to betting, no advice outside betting).
+2. NEVER drift to other topics. If asked, say "I only help with betting analysis."
 3. Always recommend value betting, discipline, and responsible gambling.
 4. Always remind users that no pick is 100% guaranteed.
 5. Keep responses under 200 words unless detailed analysis is needed.
-6. If user asks something unrelated to betting, politely redirect: "I only help with betting analysis. Ask me about match picks, patterns, or strategy."
-7. Speak like a professional betting analyst — confident but cautious.
-8. When user describes a game, analyze it for: attacking/defensive style, momentum, likely outcomes.
-9. Always consider: form, home/away, table position, recent results, and user observations.
+6. Speak like a professional betting analyst — confident but cautious.
+7. When user describes a game, analyze for: attacking/defensive style, momentum, likely outcomes.
+8. Consider: form, home/away, table position, recent results, and user observations.
 
-You NEVER sleep. You NEVER stop helping. You focus 100% on your duty: smarter betting.`;
+You focus 100% on your duty: smarter betting.`;
 
 async function callGroqAI(env, userMessage) {
   if (!env.GROQ_API_KEY) {
-    return { ok: false, error: "AI not configured" };
+    return { ok: false, error: "API key not configured in Cloudflare" };
   }
   
-  try {
-    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${env.GROQ_API_KEY}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        model: "llama-3.1-8b-instant",
-        messages: [
-          { role: "system", content: SYSTEM_PROMPT },
-          { role: "user", content: userMessage }
-        ],
-        max_tokens: 400,
-        temperature: 0.7
-      })
-    });
-    
-    if (!response.ok) {
-      return { ok: false, error: "AI request failed" };
+  // Try multiple models in case one is unavailable
+  const models = ["llama-3.1-8b-instant", "llama-3.3-70b-versatile", "mixtral-8x7b-32768"];
+  
+  for (const model of models) {
+    try {
+      const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${env.GROQ_API_KEY}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          model: model,
+          messages: [
+            { role: "system", content: SYSTEM_PROMPT },
+            { role: "user", content: userMessage }
+          ],
+          max_tokens: 400,
+          temperature: 0.7
+        })
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        return { ok: true, reply: data.choices[0].message.content, model: model };
+      }
+      
+      // If model not found, try next
+      if (response.status === 400 || response.status === 404) {
+        continue;
+      }
+      
+      const errText = await response.text();
+      return { ok: false, error: `Groq error: ${response.status}`, details: errText.substring(0, 200) };
+    } catch (e) {
+      continue;
     }
-    
-    const data = await response.json();
-    return { ok: true, reply: data.choices[0].message.content };
-  } catch (e) {
-    return { ok: false, error: "AI connection error" };
   }
+  
+  return { ok: false, error: "All models failed. Check API key." };
 }
 
 async function enhancePicksWithAI(env, picks, match, conversation, platform, type) {
@@ -119,14 +131,14 @@ async function enhancePicksWithAI(env, picks, match, conversation, platform, typ
 Base picks: ${picks.map(p => `${p.pick} (${p.conf}%)`).join(', ')}
 User description: "${conversation}"
 
-Analyze the user's description and adjust the picks. Reply in this EXACT format:
+Adjust the picks based on user description. Reply in EXACT format:
 PICK1: [pick name]|[confidence]|[one line why]
 PICK2: [pick name]|[confidence]|[one line why]
 PICK3: [pick name]|[confidence]|[one line why]
 PICK4: [pick name]|[confidence]|[one line why]
 PICK5: [pick name]|[confidence]|[one line why]
 
-Only adjust if user description strongly suggests it. Keep picks realistic (max 85%, min 40%).`;
+Only adjust if user description strongly suggests it. Keep realistic (max 85%, min 40%).`;
 
   const ai = await callGroqAI(env, prompt);
   if (!ai.ok) return picks;
@@ -206,11 +218,11 @@ async function apiAskAI(request, env) {
   const ai = await callGroqAI(env, question);
   
   if (!ai.ok) {
-    return new Response(JSON.stringify({ ok: false, error: ai.error || "AI unavailable" }), {
+    return new Response(JSON.stringify({ ok: false, error: ai.error, details: ai.details || "" }), {
       headers: { "Content-Type": "application/json" } });
   }
   
-  return new Response(JSON.stringify({ ok: true, reply: ai.reply }), {
+  return new Response(JSON.stringify({ ok: true, reply: ai.reply, model: ai.model }), {
     headers: { "Content-Type": "application/json" } });
 }
 
@@ -338,7 +350,7 @@ function generatePicks(fA, fB, tA, tB, type, platform, conversation, patterns) {
   const recs = [];
   
   if (type === "virtual") {
-    if (diff > 3) recs.push({ pick: "Home Win (1)", conf: Math.max(40, Math.min(85, 68 + baseBoost)), risk: "medium", why: "Team A dominant form" + (baseBoost ? " + pattern history" : "") });
+    if (diff > 3) recs.push({ pick: "Home Win (1)", conf: Math.max(40, Math.min(85, 68 + baseBoost)), risk: "medium", why: "Team A dominant form" + (baseBoost ? " + pattern" : "") });
     else if (diff < -3) recs.push({ pick: "Away Win (2)", conf: Math.max(40, Math.min(85, 64 + baseBoost)), risk: "medium", why: "Team B stronger" });
     else recs.push({ pick: "Over 1.5 Goals", conf: Math.max(40, Math.min(85, 72 + baseBoost)), risk: "low", why: "Virtuals score often" });
     recs.push({ pick: "BTTS: Yes", conf: 58, risk: "medium", why: "Both teams attacking" });
@@ -390,12 +402,9 @@ const pages = {
 </div>
 <div class="card glow">
   <h2 class="ct">WELCOME TO INSTANT PICKS</h2>
-  <p class="txt">Your intelligent betting co-pilot with <b class="hl">self-learning pattern engine</b> and <b class="hl">AI-powered analysis</b>.</p>
+  <p class="txt">Your intelligent betting co-pilot with <b class="hl">AI-powered analysis</b> and <b class="hl">self-learning patterns</b>.</p>
   <a href="/analyze" class="btn">START ANALYZING</a>
-</div>
-<div class="card">
-  <h3 class="ct">🧠 AI IS LIVE</h3>
-  <p class="muted">The AI brain reads your game descriptions, finds patterns, and improves every recommendation. <a href="/ask" class="hl">Ask the AI anything →</a></p>
+  <a href="/ask" class="btn" style="background:linear-gradient(135deg,#00cc6a,#009955);margin-top:10px">ASK THE AI</a>
 </div>
 <div class="card warn">
   <b class="warn-text">⚠ DISCIPLINE FIRST</b>
@@ -437,7 +446,7 @@ const pages = {
       <div><label>TEAM B POSITION</label><input name="table_b" type="number" placeholder="7" required></div>
     </div>
     <label class="optional-label">HOW IS THE GAME PLAYING? (AI READS THIS)</label>
-    <textarea name="conversation" id="conv" rows="3" placeholder="e.g. Team A pressing high, Team B defensive, lots of corners..."></textarea>
+    <textarea name="conversation" id="conv" rows="3" placeholder="e.g. Team A pressing high, Team B defensive..."></textarea>
     <button type="submit" class="btn">⚡ ANALYZE WITH AI ⚡</button>
   </form>
 </div>
@@ -447,15 +456,16 @@ const pages = {
 <div class="head"><div class="logo">⚡ ASK AI ⚡</div><div class="tag">BETTING ANALYSIS ASSISTANT</div></div>
 <div class="card glow">
   <h3 class="ct">🧠 INSTANT PICKS AI</h3>
-  <p class="muted">Ask about picks, patterns, strategy, or describe a match. I'm locked to betting analysis — that's my only duty.</p>
+  <p class="muted">Ask about picks, patterns, strategy. I'm locked to betting analysis — that's my only duty.</p>
 </div>
 <div class="card">
   <label>YOUR QUESTION</label>
-  <textarea id="aiQuestion" rows="4" placeholder="e.g. How should I approach a Sportybet virtual match when both teams are equal?"></textarea>
+  <textarea id="aiQuestion" rows="4" placeholder="e.g. How should I approach Sportybet virtual?"></textarea>
   <button class="btn" id="askBtn">⚡ ASK AI ⚡</button>
 </div>
 <div id="aiResponse" class="card" style="display:none">
   <h3 class="ct">AI RESPONSE</h3>
+  <div id="aiModel" class="muted" style="font-size:10px;margin-bottom:10px"></div>
   <div id="aiText" class="txt"></div>
 </div>
 <div class="card">
@@ -477,11 +487,6 @@ const pages = {
   <div class="stat-card highlight"><div class="stat-num" id="d-rate">0%</div><div class="stat-lbl">WIN RATE</div></div>
 </div>
 <div class="card">
-  <h3 class="ct">PATTERN ENGINE</h3>
-  <div class="muted">Active patterns: <b class="hl" id="active-patterns">0</b></div>
-  <div class="muted">Last update: <b class="hl" id="last-update">Never</b></div>
-</div>
-<div class="card">
   <a href="/analyze" class="btn">NEW ANALYSIS</a>
   <a href="/ask" class="btn" style="background:linear-gradient(135deg,#00cc6a,#009955);margin-top:10px">ASK AI</a>
 </div>`,
@@ -497,47 +502,25 @@ const pages = {
 <div class="head"><div class="logo">⚡ PATTERNS ⚡</div><div class="tag">AI-DETECTED INSIGHTS</div></div>
 <div class="card glow">
   <h3 class="ct">🧠 THE BRAIN IS LEARNING</h3>
-  <p class="muted">The Pattern Engine automatically finds patterns from your data. Patterns with <b class="hl">10+ samples</b> are shown below.</p>
+  <p class="muted">Patterns with <b class="hl">10+ samples</b> appear below.</p>
 </div>
 <div class="card">
   <h3 class="ct">DETECTED PATTERNS</h3>
-  <div id="patterns-list" class="muted">No patterns yet — log 10+ results to start seeing insights</div>
+  <div id="patterns-list" class="muted">Log 10+ results to see insights</div>
 </div>`,
 
   learn: `${nav("learn")}
-<div class="head"><div class="logo">⚡ LEARN ⚡</div><div class="tag">SMARTER BETTING</div></div>
-<div class="card">
-  <h3 class="ct">VALUE BETTING</h3>
-  <p class="txt">Value betting means finding odds that are <b class="hl">higher than the true probability</b>.</p>
-</div>
-<div class="card">
-  <h3 class="ct">BANKROLL MANAGEMENT</h3>
-  <p class="txt">Never bet more than <b class="hl">2-5%</b> of your bankroll on a single game.</p>
-</div>
-<div class="card">
-  <h3 class="ct">DISCIPLINE RULES</h3>
-  <ul class="list">
-    <li>Set a daily loss limit</li>
-    <li>Take a break after 3 losses</li>
-    <li>Don't chase losses</li>
-    <li>Only bet when there's value</li>
-    <li>Track everything</li>
-  </ul>
-</div>`,
+<div class="head"><div class="logo">⚡ LEARN ⚡</div></div>
+<div class="card"><h3 class="ct">VALUE BETTING</h3><p class="txt">Finding odds higher than true probability.</p></div>
+<div class="card"><h3 class="ct">BANKROLL</h3><p class="txt">Never bet more than 2-5% per game.</p></div>`,
 
   about: `${nav("about")}
 <div class="head"><div class="logo">⚡ ABOUT ⚡</div></div>
-<div class="card glow">
-  <h2 class="ct">OUR MISSION</h2>
-  <p class="txt">To help people make <b class="hl">smarter, safer, more disciplined</b> betting decisions.</p>
-</div>
-<div class="card">
-  <h3 class="ct">DISCLAIMER</h3>
-  <p class="txt">Betting carries risk. <b class="warn-text">Bet responsibly.</b></p>
-</div>`,
+<div class="card glow"><h2 class="ct">MISSION</h2><p class="txt">Smarter, safer, more disciplined betting.</p></div>
+<div class="card"><h3 class="ct">DISCLAIMER</h3><p class="txt">Betting carries risk. <b class="warn-text">Bet responsibly.</b></p></div>`,
 
   admin: `${nav("admin")}
-<div class="head"><div class="logo">⚡ ADMIN ⚡</div><div class="tag">CONTROL CENTER</div></div>
+<div class="head"><div class="logo">⚡ ADMIN ⚡</div></div>
 <div class="card" id="login-card">
   <h3 class="ct">ACCESS REQUIRED</h3>
   <input type="password" id="pass" placeholder="Enter admin password" style="margin-top:15px">
@@ -545,18 +528,13 @@ const pages = {
 </div>
 <div id="panel" style="display:none">
   <div class="card">
-    <h3 class="ct">SYSTEM STATS</h3>
+    <h3 class="ct">STATS</h3>
     <div id="a-stats" class="muted">Loading...</div>
   </div>
   <div class="card">
     <h3 class="ct">AI BRAIN</h3>
-    <div class="muted">Status: <b class="hl">ACTIVE</b> (Groq)</div>
-    <div class="muted">Model: llama-3.1-8b-instant</div>
-    <div class="muted">Mode: <b class="hl">BETTING ONLY</b> (locked)</div>
-  </div>
-  <div class="card">
-    <h3 class="ct">PATTERN ENGINE</h3>
-    <div id="a-patterns" class="muted">Loading...</div>
+    <div class="muted">Status: <b class="hl">CONNECTED</b> (Groq)</div>
+    <div class="muted">Mode: <b class="hl">BETTING ONLY</b></div>
   </div>
 </div>`
 };
@@ -632,7 +610,6 @@ button.w{background:var(--green);color:#000;box-shadow:0 0 15px rgba(0,255,136,.
 button.l{background:#1a0000;color:var(--red);border:1px solid var(--red)}
 .list{color:#ccc;line-height:2;font-size:13px;padding-left:20px}
 .pattern-item{background:rgba(0,255,136,.05);border-left:3px solid var(--green);padding:10px;margin:8px 0;border-radius:6px}
-.ai-msg{background:rgba(0,255,136,.05);border:1px solid rgba(0,255,136,.2);padding:15px;border-radius:8px;margin-top:10px}
 </style></head><body>
 <canvas id="matrix"></canvas>
 <div class="lightning"></div>
@@ -686,7 +663,6 @@ async function loadStats(){
     const rules=p.rules||{};
     const active=Object.values(rules).filter(r=>r.total>=10).length;
     const ap=document.getElementById('active-patterns');if(ap)ap.textContent=active;
-    if(p.lastUpdate){const lu=document.getElementById('last-update');if(lu)lu.textContent=new Date(p.lastUpdate).toLocaleString()}
   }catch(e){}}
 loadStats();
 async function loadPatterns(){
@@ -696,7 +672,7 @@ async function loadPatterns(){
     if(!list)return;
     const rules=p.rules||{};
     const active=Object.entries(rules).filter(([k,v])=>v.total>=10).sort((a,b)=>b[1].confidence-a[1].confidence);
-    if(!active.length){list.innerHTML='No active patterns yet. <b class="hl">Log 10+ results</b> to start seeing insights.';return}
+    if(!active.length){list.innerHTML='No active patterns yet. <b class="hl">Log 10+ results</b> to see insights.';return}
     list.innerHTML=active.map(([key,r])=>{
       const readable=key.replace(/_/g,' ').replace(/\\d+/g,'').toUpperCase();
       return '<div class="pattern-item"><b class="hl">'+readable+'</b><br><span class="muted">'+r.hits+' wins / '+r.total+' games = <b class="hl">'+r.confidence+'%</b> accuracy</span></div>';
@@ -721,8 +697,7 @@ if(af)af.addEventListener('submit',async e=>{
     const d=await r.json();
     if(d.ok){
       const res=document.getElementById('result');
-      const aiTag=d.picks[0].why.includes('AI')||d.picks[0].why.length>50?'<span class="tag2" style="margin-left:5px">AI</span>':'';
-      res.innerHTML='<div class="head"><div style="font-size:18px;font-weight:800">'+d.teamA+' <span class="hl">VS</span> '+d.teamB+'</div><div style="color:var(--gray);font-size:10px;letter-spacing:2px;margin-top:5px">'+d.platform.toUpperCase()+' • '+d.type.toUpperCase()+aiTag+'</div></div>'+d.picks.map((p,i)=>'<div class="card"><div style="display:flex;justify-content:space-between;align-items:center"><span class="tag2">PICK #'+(i+1)+'</span><span class="risk-'+p.risk+'" style="padding:3px 10px;border-radius:15px;font-size:10px;font-weight:900">'+p.risk.toUpperCase()+'</span></div><div class="name">'+p.pick+'</div><div class="conf">'+p.conf+'%</div><div class="why">'+p.why+'</div><div class="btns"><form><input type="hidden" value="'+d.predId+'" name="pid"><input type="hidden" value="'+d.teamA+' vs '+d.teamB+'" name="m"><input type="hidden" value="'+p.pick+'" name="p"><button class="w" name="o" value="win">WIN</button><button class="l" name="o" value="lose">LOSE</button></form></div></div>').join('')+'<a href="/analyze" class="btn">NEW ANALYSIS</a>';
+      res.innerHTML='<div class="head"><div style="font-size:18px;font-weight:800">'+d.teamA+' <span class="hl">VS</span> '+d.teamB+'</div><div style="color:var(--gray);font-size:10px;letter-spacing:2px;margin-top:5px">'+d.platform.toUpperCase()+' • '+d.type.toUpperCase()+'</div></div>'+d.picks.map((p,i)=>'<div class="card"><div style="display:flex;justify-content:space-between;align-items:center"><span class="tag2">PICK #'+(i+1)+'</span><span class="risk-'+p.risk+'" style="padding:3px 10px;border-radius:15px;font-size:10px;font-weight:900">'+p.risk.toUpperCase()+'</span></div><div class="name">'+p.pick+'</div><div class="conf">'+p.conf+'%</div><div class="why">'+p.why+'</div><div class="btns"><form><input type="hidden" value="'+d.predId+'" name="pid"><input type="hidden" value="'+d.teamA+' vs '+d.teamB+'" name="m"><input type="hidden" value="'+p.pick+'" name="p"><button class="w" name="o" value="win">WIN</button><button class="l" name="o" value="lose">LOSE</button></form></div></div>').join('')+'<a href="/analyze" class="btn">NEW ANALYSIS</a>';
       res.scrollIntoView({behavior:'smooth'});
       res.querySelectorAll('form').forEach(f=>f.addEventListener('submit',async ev=>{
         ev.preventDefault();
@@ -750,12 +725,14 @@ if(askBtn)askBtn.addEventListener('click',async()=>{
     const d=await r.json();
     const box=document.getElementById('aiResponse');
     const txt=document.getElementById('aiText');
+    const mod=document.getElementById('aiModel');
     if(d.ok){
       txt.textContent=d.reply;
+      mod.textContent='Model: '+(d.model||'AI');
       box.style.display='block';
       box.scrollIntoView({behavior:'smooth'});
     }else{
-      alert('AI error: '+(d.error||'unknown'));
+      alert('AI error: '+d.error+(d.details?'\\n\\nDetails: '+d.details.substring(0,150):''));
     }
   }catch(e){alert('Error: '+e.message)}
   askBtn.disabled=false;askBtn.textContent='⚡ ASK AI ⚡';
@@ -771,10 +748,6 @@ async function adminLogin(){
     const sr=await fetch('/api/stats');const ss=await sr.json();
     const rate=ss.total>0?Math.round(ss.wins/ss.total*1000)/10:0;
     document.getElementById('a-stats').innerHTML='<div style="margin:8px 0"><b class="hl">Total:</b> '+ss.total+'</div><div style="margin:8px 0"><b class="hl">Wins:</b> '+ss.wins+'</div><div style="margin:8px 0"><b class="hl">Win Rate:</b> '+rate+'%</div>';
-    const pr=await fetch('/api/patterns');const pp=await pr.json();
-    const rules=Object.values(pp.rules||{});
-    const active=rules.filter(r=>r.total>=10).length;
-    document.getElementById('a-patterns').innerHTML='<div style="margin:8px 0"><b class="hl">Active patterns:</b> '+active+'</div><div style="margin:8px 0"><b class="hl">Total samples:</b> '+rules.reduce((a,r)=>a+r.total,0)+'</div><div style="margin:8px 0"><b class="hl">Last update:</b> '+(pp.lastUpdate?new Date(pp.lastUpdate).toLocaleString():'Never')+'</div>';
   }else alert('Wrong password');
 }
 </script>
