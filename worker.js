@@ -11,7 +11,8 @@ export default {
       "/patterns": "patterns",
       "/learn": "learn",
       "/about": "about",
-      "/admin": "admin"
+      "/admin": "admin",
+      "/ask": "ask"
     };
     
     if (path === "/api/analyze" && request.method === "POST") return await apiAnalyze(request, env);
@@ -19,6 +20,7 @@ export default {
     if (path === "/api/stats") return await apiStats(env);
     if (path === "/api/predictions") return await apiPredictions(env);
     if (path === "/api/patterns") return await apiPatterns(env);
+    if (path === "/api/ai/ask" && request.method === "POST") return await apiAskAI(request, env);
     if (path === "/api/admin/login" && request.method === "POST") return await adminLogin(request);
     
     const page = routes[path] || "404";
@@ -59,6 +61,102 @@ const PLATFORMS = {
   ]
 };
 
+const SYSTEM_PROMPT = `You are INSTANT PICKS AI, a strict betting analysis assistant. 
+
+YOUR ONLY JOB: Help users make smarter, safer betting decisions by analyzing patterns, form, statistics, and user descriptions of matches.
+
+STRICT RULES:
+1. ONLY discuss betting analysis, picks, patterns, odds value, bankroll management, and discipline.
+2. NEVER drift to other topics (no general knowledge, no jokes unrelated to betting, no advice outside betting).
+3. Always recommend value betting, discipline, and responsible gambling.
+4. Always remind users that no pick is 100% guaranteed.
+5. Keep responses under 200 words unless detailed analysis is needed.
+6. If user asks something unrelated to betting, politely redirect: "I only help with betting analysis. Ask me about match picks, patterns, or strategy."
+7. Speak like a professional betting analyst — confident but cautious.
+8. When user describes a game, analyze it for: attacking/defensive style, momentum, likely outcomes.
+9. Always consider: form, home/away, table position, recent results, and user observations.
+
+You NEVER sleep. You NEVER stop helping. You focus 100% on your duty: smarter betting.`;
+
+async function callGroqAI(env, userMessage) {
+  if (!env.GROQ_API_KEY) {
+    return { ok: false, error: "AI not configured" };
+  }
+  
+  try {
+    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${env.GROQ_API_KEY}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model: "llama-3.1-8b-instant",
+        messages: [
+          { role: "system", content: SYSTEM_PROMPT },
+          { role: "user", content: userMessage }
+        ],
+        max_tokens: 400,
+        temperature: 0.7
+      })
+    });
+    
+    if (!response.ok) {
+      return { ok: false, error: "AI request failed" };
+    }
+    
+    const data = await response.json();
+    return { ok: true, reply: data.choices[0].message.content };
+  } catch (e) {
+    return { ok: false, error: "AI connection error" };
+  }
+}
+
+async function enhancePicksWithAI(env, picks, match, conversation, platform, type) {
+  if (!env.GROQ_API_KEY || !conversation) return picks;
+  
+  const prompt = `Match: ${match} on ${platform} (${type})
+Base picks: ${picks.map(p => `${p.pick} (${p.conf}%)`).join(', ')}
+User description: "${conversation}"
+
+Analyze the user's description and adjust the picks. Reply in this EXACT format:
+PICK1: [pick name]|[confidence]|[one line why]
+PICK2: [pick name]|[confidence]|[one line why]
+PICK3: [pick name]|[confidence]|[one line why]
+PICK4: [pick name]|[confidence]|[one line why]
+PICK5: [pick name]|[confidence]|[one line why]
+
+Only adjust if user description strongly suggests it. Keep picks realistic (max 85%, min 40%).`;
+
+  const ai = await callGroqAI(env, prompt);
+  if (!ai.ok) return picks;
+  
+  const lines = ai.reply.split('\n').filter(l => l.startsWith('PICK'));
+  const enhanced = [];
+  
+  for (let i = 0; i < picks.length; i++) {
+    const line = lines.find(l => l.startsWith('PICK' + (i+1) + ':'));
+    if (line) {
+      const parts = line.split('|').map(p => p.trim());
+      if (parts.length >= 3) {
+        const conf = parseInt(parts[1]) || picks[i].conf;
+        enhanced.push({
+          ...picks[i],
+          pick: parts[0].replace(/^PICK\d+:\s*/, '').trim(),
+          conf: Math.max(40, Math.min(85, conf)),
+          why: parts[2]
+        });
+      } else {
+        enhanced.push(picks[i]);
+      }
+    } else {
+      enhanced.push(picks[i]);
+    }
+  }
+  
+  return enhanced;
+}
+
 async function apiAnalyze(request, env) {
   const form = await request.formData();
   const platform = form.get("platform") || "sportybet";
@@ -72,7 +170,11 @@ async function apiAnalyze(request, env) {
   const conversation = form.get("conversation") || "";
   
   const patterns = await loadPatterns(env);
-  const recs = generatePicks(formA, formB, tableA, tableB, type, platform, conversation, patterns);
+  let recs = generatePicks(formA, formB, tableA, tableB, type, platform, conversation, patterns);
+  
+  if (conversation && env.GROQ_API_KEY) {
+    recs = await enhancePicksWithAI(env, recs, `${teamA} vs ${teamB}`, conversation, platform, type);
+  }
   
   const predId = `p_${Date.now()}`;
   if (env.PICKS_KV) {
@@ -89,6 +191,26 @@ async function apiAnalyze(request, env) {
   }
   
   return new Response(JSON.stringify({ ok: true, predId, teamA, teamB, platform, type, picks: recs }), {
+    headers: { "Content-Type": "application/json" } });
+}
+
+async function apiAskAI(request, env) {
+  const form = await request.formData();
+  const question = form.get("question") || "";
+  
+  if (!question.trim()) {
+    return new Response(JSON.stringify({ ok: false, error: "Empty question" }), {
+      headers: { "Content-Type": "application/json" } });
+  }
+  
+  const ai = await callGroqAI(env, question);
+  
+  if (!ai.ok) {
+    return new Response(JSON.stringify({ ok: false, error: ai.error || "AI unavailable" }), {
+      headers: { "Content-Type": "application/json" } });
+  }
+  
+  return new Response(JSON.stringify({ ok: true, reply: ai.reply }), {
     headers: { "Content-Type": "application/json" } });
 }
 
@@ -136,9 +258,7 @@ async function learnFromResult(env, pred, pick, outcome) {
   const tableDiff = (pred.tableB || 5) - (pred.tableA || 5);
   
   const key = `${pred.platform}_${pred.type}_form${formDiff}_pos${tableDiff > 0 ? "good" : "bad"}`;
-  if (!patterns.rules[key]) {
-    patterns.rules[key] = { hits: 0, total: 0, confidence: 50, samples: [] };
-  }
+  if (!patterns.rules[key]) patterns.rules[key] = { hits: 0, total: 0, confidence: 50, samples: [] };
   patterns.rules[key].total++;
   if (outcome === "win") patterns.rules[key].hits++;
   patterns.rules[key].confidence = Math.round((patterns.rules[key].hits / patterns.rules[key].total) * 100);
@@ -146,11 +266,8 @@ async function learnFromResult(env, pred, pick, outcome) {
   if (patterns.rules[key].samples.length > 20) patterns.rules[key].samples.shift();
   
   if (pred.conversation) {
-    const conv = pred.conversation.toLowerCase();
-    const convKey = `${pred.platform}_conv_${getConvCategory(conv)}`;
-    if (!patterns.rules[convKey]) {
-      patterns.rules[convKey] = { hits: 0, total: 0, confidence: 50, samples: [] };
-    }
+    const convKey = `${pred.platform}_conv_${getConvCategory(pred.conversation.toLowerCase())}`;
+    if (!patterns.rules[convKey]) patterns.rules[convKey] = { hits: 0, total: 0, confidence: 50, samples: [] };
     patterns.rules[convKey].total++;
     if (outcome === "win") patterns.rules[convKey].hits++;
     patterns.rules[convKey].confidence = Math.round((patterns.rules[convKey].hits / patterns.rules[convKey].total) * 100);
@@ -172,16 +289,6 @@ async function loadPatterns(env) {
   if (!env.PICKS_KV) return { rules: {} };
   const raw = await env.PICKS_KV.get("patterns");
   return raw ? JSON.parse(raw) : { rules: {} };
-}
-
-function applyPatternBoost(baseConf, patterns, platform, type, formDiff, tableDiff) {
-  const key = `${platform}_${type}_form${formDiff}_pos${tableDiff > 0 ? "good" : "bad"}`;
-  const rule = patterns.rules[key];
-  if (rule && rule.total >= 3) {
-    const boost = Math.round((rule.confidence - 50) / 5);
-    return Math.max(40, Math.min(85, baseConf + boost));
-  }
-  return baseConf;
 }
 
 async function apiPatterns(env) {
@@ -220,49 +327,32 @@ function generatePicks(fA, fB, tA, tB, type, platform, conversation, patterns) {
   const sB = fB.reduce((s, r) => s + (r === "W" ? 3 : r === "D" ? 1 : 0), 0);
   const diff = sA - sB;
   const gap = tA - tB;
-  const conv = conversation.toLowerCase();
-  
-  let convBoost = 0;
-  if (conv.includes("attack") || conv.includes("pressing") || conv.includes("fast")) convBoost += 5;
-  if (conv.includes("defensive") || conv.includes("slow") || conv.includes("careful")) convBoost -= 3;
-  if (conv.includes("injured") || conv.includes("weak")) convBoost -= 5;
   
   let baseBoost = 0;
   if (patterns && patterns.rules) {
     const key = `${platform}_${type}_form${diff}_pos${gap > 0 ? "good" : "bad"}`;
     const rule = patterns.rules[key];
-    if (rule && rule.total >= 3) {
-      baseBoost = Math.round((rule.confidence - 50) / 5);
-    }
-    const convKey = `${platform}_conv_${getConvCategory(conv)}`;
-    const convRule = patterns.rules[convKey];
-    if (convRule && convRule.total >= 3) {
-      baseBoost += Math.round((convRule.confidence - 50) / 5);
-    }
+    if (rule && rule.total >= 3) baseBoost = Math.round((rule.confidence - 50) / 5);
   }
   
   const recs = [];
   
   if (type === "virtual") {
-    if (diff > 3) recs.push({ pick: "Home Win (1)", conf: Math.max(40, Math.min(85, 68 + convBoost + baseBoost)), risk: "medium", why: "Team A dominant form" + (convBoost > 0 ? " + your description suggests strong attack" : "") + (baseBoost !== 0 ? " + pattern history" : "") });
-    else if (diff < -3) recs.push({ pick: "Away Win (2)", conf: Math.max(40, Math.min(85, 64 + convBoost + baseBoost)), risk: "medium", why: "Team B stronger" + (baseBoost !== 0 ? " + pattern history" : "") });
-    else recs.push({ pick: "Over 1.5 Goals", conf: Math.max(40, Math.min(85, 72 + convBoost + baseBoost)), risk: "low", why: "Virtuals score often" + (convBoost > 0 ? " + your input confirms attacking play" : "") });
-    
-    recs.push({ pick: "BTTS: Yes", conf: Math.max(40, Math.min(85, 58 + Math.floor(convBoost/2) + baseBoost)), risk: "medium", why: "Both teams attacking pattern" });
-    recs.push({ pick: "Double Chance (1X)", conf: 75, risk: "low", why: "Safe play on home" });
-    recs.push({ pick: "Over 2.5 Goals", conf: Math.max(40, Math.min(85, 52 + Math.floor(convBoost/2) + baseBoost)), risk: "high", why: "High-scoring virtual" });
+    if (diff > 3) recs.push({ pick: "Home Win (1)", conf: Math.max(40, Math.min(85, 68 + baseBoost)), risk: "medium", why: "Team A dominant form" + (baseBoost ? " + pattern history" : "") });
+    else if (diff < -3) recs.push({ pick: "Away Win (2)", conf: Math.max(40, Math.min(85, 64 + baseBoost)), risk: "medium", why: "Team B stronger" });
+    else recs.push({ pick: "Over 1.5 Goals", conf: Math.max(40, Math.min(85, 72 + baseBoost)), risk: "low", why: "Virtuals score often" });
+    recs.push({ pick: "BTTS: Yes", conf: 58, risk: "medium", why: "Both teams attacking" });
+    recs.push({ pick: "Double Chance (1X)", conf: 75, risk: "low", why: "Safe home play" });
+    recs.push({ pick: "Over 2.5 Goals", conf: 52, risk: "high", why: "High-scoring virtual" });
   } else {
-    if (diff > 3 && gap < 0) recs.push({ pick: "Home Win (1)", conf: 66 + convBoost + baseBoost, risk: "medium", why: "Form + position favor home" });
-    else if (diff < -3) recs.push({ pick: "Away Win (2)", conf: 62 + convBoost + baseBoost, risk: "medium", why: "Away team superior" });
+    if (diff > 3 && gap < 0) recs.push({ pick: "Home Win (1)", conf: 66 + baseBoost, risk: "medium", why: "Form + position favor home" });
+    else if (diff < -3) recs.push({ pick: "Away Win (2)", conf: 62 + baseBoost, risk: "medium", why: "Away team superior" });
     else recs.push({ pick: "Double Chance (1X or X2)", conf: 75, risk: "low", why: "Balanced match" });
-    
     recs.push({ pick: "Under 3.5 Goals", conf: 70, risk: "low", why: "Tight match expected" });
     recs.push({ pick: "BTTS: No", conf: 60, risk: "medium", why: "Defensive setup likely" });
     recs.push({ pick: "Draw No Bet (Home)", conf: 65, risk: "low", why: "Insurance on draw" });
   }
-  
   recs.push({ pick: "Half-time: Draw", conf: 55, risk: "medium", why: "Most matches tight at HT" });
-  
   return recs.slice(0, 5);
 }
 
@@ -273,17 +363,17 @@ const ICONS = {
   history: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3V21H21M7 16L12 11L15 14L21 8"/></svg>',
   patterns: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 1V3M12 21V23M4.22 4.22L5.64 5.64M18.36 18.36L19.78 19.78M1 12H3M21 12H23M4.22 19.78L5.64 18.36M18.36 5.64L19.78 4.22"/></svg>',
   learn: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 3H8C9 3 10 4 10 5V21C10 20 9 19 8 19H2V3M22 3H16C15 3 14 4 14 5V21C14 20 15 19 16 19H22V3M7 7H5M7 11H5M7 15H5M19 7H17M19 11H17M19 15H17"/></svg>',
-  lock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7C7 4.24 9.24 2 12 2C14.76 2 17 4.24 17 7V11"/></svg>'
+  lock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7C7 4.24 9.24 2 12 2C14.76 2 17 4.24 17 7V11"/></svg>',
+  ask: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 11.5C21 16.75 16.75 21 11.5 21C9.83 21 8.27 20.55 6.93 19.78L3 21L4.22 17.07C3.45 15.73 3 14.17 3 12.5C3 7.25 7.25 3 12.5 3C16.75 3 20.25 6.25 20.25 10.5"/></svg>'
 };
 
 function nav(active) {
   const items = [
     ["home", "HOME", ICONS.home],
     ["analyze", "ANALYZE", ICONS.analyze],
+    ["ask", "ASK AI", ICONS.ask],
     ["dashboard", "STATS", ICONS.dashboard],
-    ["history", "HISTORY", ICONS.history],
-    ["patterns", "PATTERNS", ICONS.patterns],
-    ["learn", "LEARN", ICONS.learn]
+    ["patterns", "PATTERNS", ICONS.patterns]
   ];
   return `<div class="nav">${items.map(([k, v, icon]) => 
     `<a href="/${k === 'home' ? '' : k}" class="${active === k ? 'active' : ''}"><span class="icon">${icon}</span><span>${v}</span></a>`
@@ -296,16 +386,16 @@ const pages = {
 <div class="hero">
   <div class="hero-stat"><div class="num" id="h-total">0</div><div class="lbl">ANALYSES</div></div>
   <div class="hero-stat"><div class="num" id="h-rate">0%</div><div class="lbl">WIN RATE</div></div>
-  <div class="hero-stat"><div class="num" id="h-patterns">0</div><div class="lbl">PATTERNS</div></div>
+  <div class="hero-stat"><div class="num">14</div><div class="lbl">PLATFORMS</div></div>
 </div>
 <div class="card glow">
   <h2 class="ct">WELCOME TO INSTANT PICKS</h2>
-  <p class="txt">Your intelligent betting co-pilot with <b class="hl">self-learning pattern engine</b>. The more you use it, the smarter it gets.</p>
+  <p class="txt">Your intelligent betting co-pilot with <b class="hl">self-learning pattern engine</b> and <b class="hl">AI-powered analysis</b>.</p>
   <a href="/analyze" class="btn">START ANALYZING</a>
 </div>
 <div class="card">
-  <h3 class="ct">🧠 PATTERN ENGINE ACTIVE</h3>
-  <p class="muted">The engine is watching every prediction and result, finding patterns automatically. <b class="hl">10+ samples</b> needed before a pattern becomes active.</p>
+  <h3 class="ct">🧠 AI IS LIVE</h3>
+  <p class="muted">The AI brain reads your game descriptions, finds patterns, and improves every recommendation. <a href="/ask" class="hl">Ask the AI anything →</a></p>
 </div>
 <div class="card warn">
   <b class="warn-text">⚠ DISCIPLINE FIRST</b>
@@ -322,15 +412,12 @@ const pages = {
       <label class="toggle" data-type="real">REAL FOOTBALL</label>
     </div>
     <input type="hidden" name="type" id="typeInput" value="virtual">
-    
     <label>PLATFORM</label>
     <select name="platform" id="platformSel">${PLATFORMS.virtual.map(p => `<option value="${p.id}">${p.name} — ${p.game}</option>`).join("")}</select>
-    
     <label>TEAM A</label>
     <input name="team_a" placeholder="e.g. Manchester United" required>
     <label>TEAM B</label>
     <input name="team_b" placeholder="e.g. Liverpool" required>
-    
     <label>TEAM A — LAST 5 (W/L/D)</label>
     <div class="qt-row" data-target="form_a">
       <button type="button" class="qt" data-v="W">W</button>
@@ -338,7 +425,6 @@ const pages = {
       <button type="button" class="qt" data-v="L">L</button>
     </div>
     <input name="form_a" id="form_a" placeholder="W,L,D,W,W" required>
-    
     <label>TEAM B — LAST 5 (W/L/D)</label>
     <div class="qt-row" data-target="form_b">
       <button type="button" class="qt" data-v="W">W</button>
@@ -346,19 +432,41 @@ const pages = {
       <button type="button" class="qt" data-v="L">L</button>
     </div>
     <input name="form_b" id="form_b" placeholder="L,W,L,D,W" required>
-    
     <div class="row">
       <div><label>TEAM A POSITION</label><input name="table_a" type="number" placeholder="3" required></div>
       <div><label>TEAM B POSITION</label><input name="table_b" type="number" placeholder="7" required></div>
     </div>
-    
-    <label class="optional-label">HOW IS THE GAME PLAYING? (OPTIONAL)</label>
-    <textarea name="conversation" id="conv" rows="3" placeholder="e.g. Team A pressing high, Team B defensive..."></textarea>
-    
-    <button type="submit" class="btn">⚡ ANALYZE ⚡</button>
+    <label class="optional-label">HOW IS THE GAME PLAYING? (AI READS THIS)</label>
+    <textarea name="conversation" id="conv" rows="3" placeholder="e.g. Team A pressing high, Team B defensive, lots of corners..."></textarea>
+    <button type="submit" class="btn">⚡ ANALYZE WITH AI ⚡</button>
   </form>
 </div>
 <div id="result"></div>`,
+
+  ask: `${nav("ask")}
+<div class="head"><div class="logo">⚡ ASK AI ⚡</div><div class="tag">BETTING ANALYSIS ASSISTANT</div></div>
+<div class="card glow">
+  <h3 class="ct">🧠 INSTANT PICKS AI</h3>
+  <p class="muted">Ask about picks, patterns, strategy, or describe a match. I'm locked to betting analysis — that's my only duty.</p>
+</div>
+<div class="card">
+  <label>YOUR QUESTION</label>
+  <textarea id="aiQuestion" rows="4" placeholder="e.g. How should I approach a Sportybet virtual match when both teams are equal?"></textarea>
+  <button class="btn" id="askBtn">⚡ ASK AI ⚡</button>
+</div>
+<div id="aiResponse" class="card" style="display:none">
+  <h3 class="ct">AI RESPONSE</h3>
+  <div id="aiText" class="txt"></div>
+</div>
+<div class="card">
+  <h3 class="ct">TRY ASKING</h3>
+  <div class="muted" style="font-size:12px;line-height:1.8">
+  • "What's the safest bet on Bet9ja virtual?"<br>
+  • "How do I manage my bankroll?"<br>
+  • "Should I chase my losses?"<br>
+  • "What's value betting?"
+  </div>
+</div>`,
 
   dashboard: `${nav("dashboard")}
 <div class="head"><div class="logo">⚡ DASHBOARD ⚡</div><div class="tag">YOUR PERFORMANCE</div></div>
@@ -371,15 +479,11 @@ const pages = {
 <div class="card">
   <h3 class="ct">PATTERN ENGINE</h3>
   <div class="muted">Active patterns: <b class="hl" id="active-patterns">0</b></div>
-  <div class="muted">Total samples: <b class="hl" id="total-samples">0</b></div>
   <div class="muted">Last update: <b class="hl" id="last-update">Never</b></div>
 </div>
 <div class="card">
-  <h3 class="ct">DISCIPLINE ALERTS</h3>
-  <div id="alerts" class="muted">All clear. Keep being disciplined.</div>
-</div>
-<div class="card">
   <a href="/analyze" class="btn">NEW ANALYSIS</a>
+  <a href="/ask" class="btn" style="background:linear-gradient(135deg,#00cc6a,#009955);margin-top:10px">ASK AI</a>
 </div>`,
 
   history: `${nav("history")}
@@ -445,12 +549,14 @@ const pages = {
     <div id="a-stats" class="muted">Loading...</div>
   </div>
   <div class="card">
-    <h3 class="ct">PATTERN ENGINE STATUS</h3>
-    <div id="a-patterns" class="muted">Loading...</div>
+    <h3 class="ct">AI BRAIN</h3>
+    <div class="muted">Status: <b class="hl">ACTIVE</b> (Groq)</div>
+    <div class="muted">Model: llama-3.1-8b-instant</div>
+    <div class="muted">Mode: <b class="hl">BETTING ONLY</b> (locked)</div>
   </div>
   <div class="card">
-    <h3 class="ct">ALL PREDICTIONS</h3>
-    <div id="a-preds" class="muted">Loading...</div>
+    <h3 class="ct">PATTERN ENGINE</h3>
+    <div id="a-patterns" class="muted">Loading...</div>
   </div>
 </div>`
 };
@@ -468,7 +574,7 @@ canvas#matrix{position:fixed;top:0;left:0;width:100%;height:100%;z-index:0;opaci
 @keyframes scan{0%{top:0}100%{top:100%}}
 .c{position:relative;z-index:2;max-width:560px;margin:0 auto;padding:12px}
 .nav{display:flex;gap:4px;margin-bottom:18px;flex-wrap:wrap;background:rgba(0,0,0,.6);padding:6px;border-radius:10px;border:1px solid rgba(0,255,136,.2);backdrop-filter:blur(10px)}
-.nav a{flex:1;min-width:60px;text-align:center;padding:9px 4px;color:var(--gray);text-decoration:none;font-size:10px;font-weight:700;letter-spacing:1px;border-radius:6px;transition:.3s;display:flex;flex-direction:column;align-items:center;gap:3px}
+.nav a{flex:1;min-width:50px;text-align:center;padding:9px 4px;color:var(--gray);text-decoration:none;font-size:9px;font-weight:700;letter-spacing:1px;border-radius:6px;transition:.3s;display:flex;flex-direction:column;align-items:center;gap:3px}
 .nav a .icon{width:18px;height:18px;display:block}
 .nav a .icon svg{width:100%;height:100%;stroke:var(--gray);transition:.3s}
 .nav a.active,.nav a:hover{background:rgba(0,255,136,.15);color:var(--green)}
@@ -477,18 +583,200 @@ canvas#matrix{position:fixed;top:0;left:0;width:100%;height:100%;z-index:0;opaci
 .nav a.admin-btn .icon svg{stroke:var(--red)}
 .nav a.admin-btn.active{background:rgba(255,51,51,.3);color:var(--red)}
 .head{text-align:center;padding:20px 0 15px;border-bottom:1px solid rgba(0,255,136,.2);margin-bottom:20px}
-.logo{font-size:28px;font-weight:900;color:var(--green);text-shadow:0 0 20px var(--green);letter-spacing:3px;animation:glow 2s infinite alternate}
+.logo{font-size:26px;font-weight:900;color:var(--green);text-shadow:0 0 20px var(--green);letter-spacing:3px;animation:glow 2s infinite alternate}
 @keyframes glow{from{text-shadow:0 0 10px var(--green)}to{text-shadow:0 0 30px var(--green),0 0 50px var(--green)}}
 .tag{color:var(--gray);font-size:10px;margin-top:6px;letter-spacing:3px}
 .card{background:linear-gradient(135deg,rgba(0,255,136,.03),var(--card));border:1px solid rgba(0,255,136,.2);border-radius:12px;padding:18px;margin:10px 0;backdrop-filter:blur(10px)}
 .card.glow{box-shadow:0 0 30px rgba(0,255,136,.1);border-color:rgba(0,255,136,.4)}
 .card.warn{border-color:rgba(255,51,51,.3);background:linear-gradient(135deg,rgba(255,51,51,.05),var(--card))}
 .ct{color:var(--green);margin-bottom:12px;font-size:15px;letter-spacing:1px}
-.txt{color:#ccc;line-height:1.6;font-size:13px}
-.hl{color:var(--green);text-shadow:0 0 5px var(--green)}
+.txt{color:#ccc;line-height:1.6;font-size:13px;white-space:pre-wrap}
+.hl{color:var(--green);text-shadow:0 0 5px var(--green);text-decoration:none}
 .warn-text{color:var(--red);text-shadow:0 0 5px var(--red)}
 .muted{color:var(--gray);font-size:13px;line-height:1.6}
 label{display:block;color:var(--green);font-size:11px;font-weight:700;margin:14px 0 6px;letter-spacing:2px}
 .optional-label{color:var(--yellow);font-size:10px}
 input,select,textarea{width:100%;padding:13px;background:rgba(0,0,0,.5);color:#fff;border:1px solid #333;border-radius:8px;font-size:14px;font-family:inherit}
-input:focus,select:focus,textarea:focus{outline:none;border-color:var(--green);box-shadow:0 0 
+input:focus,select:focus,textarea:focus{outline:none;border-color:var(--green);box-shadow:0 0 10px rgba(0,255,136,.3)}
+textarea{resize:vertical;min-height:60px}
+.row{display:flex;gap:10px;margin-top:5px}.row>div{flex:1}
+.btn{width:100%;padding:15px;background:linear-gradient(135deg,var(--green),var(--dark-green));color:#000;font-weight:900;font-size:13px;border:none;border-radius:8px;margin-top:18px;cursor:pointer;text-transform:uppercase;letter-spacing:2px;font-family:inherit;box-shadow:0 0 20px rgba(0,255,136,.4);transition:.3s;text-decoration:none;display:inline-block;text-align:center}
+.btn:hover{box-shadow:0 0 40px rgba(0,255,136,.7)}
+.btn:disabled{opacity:.5;cursor:wait}
+.hero{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:15px 0}
+.hero-stat{background:var(--card);border:1px solid rgba(0,255,136,.2);border-radius:10px;padding:12px;text-align:center}
+.hero-stat .num{font-size:24px;font-weight:900;color:var(--green);text-shadow:0 0 10px var(--green)}
+.hero-stat .lbl{font-size:9px;color:var(--gray);letter-spacing:2px;margin-top:4px}
+.stats-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin:12px 0}
+.stat-card{background:var(--card);border:1px solid rgba(0,255,136,.2);border-radius:10px;padding:18px;text-align:center}
+.stat-card.highlight{border-color:var(--green);box-shadow:0 0 20px rgba(0,255,136,.2)}
+.stat-num{font-size:30px;font-weight:900;color:var(--green);text-shadow:0 0 10px var(--green)}
+.stat-lbl{font-size:10px;color:var(--gray);letter-spacing:2px;margin-top:5px}
+.toggle-row{display:flex;gap:6px;margin:8px 0}
+.toggle{flex:1;text-align:center;padding:12px;background:rgba(0,0,0,.5);border:1px solid #333;border-radius:8px;cursor:pointer;font-size:12px;font-weight:700;letter-spacing:1px;color:var(--gray);transition:.3s}
+.toggle.active{background:rgba(0,255,136,.15);border-color:var(--green);color:var(--green);box-shadow:0 0 10px rgba(0,255,136,.2)}
+.qt-row{display:flex;gap:6px;margin:8px 0}
+.qt{flex:1;padding:10px;background:rgba(0,0,0,.5);color:#fff;border:1px solid #333;border-radius:6px;cursor:pointer;font-family:inherit;font-weight:700;transition:.2s}
+.qt:hover,.qt:active{background:rgba(0,255,136,.2);border-color:var(--green)}
+.tag2{display:inline-block;background:var(--green);color:#000;padding:3px 10px;border-radius:15px;font-size:10px;font-weight:900;letter-spacing:1px}
+.risk-low{background:#003300;color:var(--green);border:1px solid var(--green)}
+.risk-medium{background:#332200;color:var(--yellow);border:1px solid var(--yellow)}
+.risk-high{background:#330000;color:var(--red);border:1px solid var(--red)}
+.name{font-size:17px;font-weight:800;margin:10px 0 5px}
+.conf{font-size:38px;font-weight:900;color:var(--green);text-shadow:0 0 15px var(--green)}
+.why{color:var(--gray);font-size:12px;margin:8px 0;line-height:1.5}
+.btns{display:flex;gap:8px;margin-top:12px}
+.btns form{flex:1;display:flex;gap:8px}
+button.w,button.l{flex:1;padding:12px;border:none;border-radius:8px;font-weight:900;cursor:pointer;font-family:inherit;font-size:12px;letter-spacing:1px}
+button.w{background:var(--green);color:#000;box-shadow:0 0 15px rgba(0,255,136,.5)}
+button.l{background:#1a0000;color:var(--red);border:1px solid var(--red)}
+.list{color:#ccc;line-height:2;font-size:13px;padding-left:20px}
+.pattern-item{background:rgba(0,255,136,.05);border-left:3px solid var(--green);padding:10px;margin:8px 0;border-radius:6px}
+.ai-msg{background:rgba(0,255,136,.05);border:1px solid rgba(0,255,136,.2);padding:15px;border-radius:8px;margin-top:10px}
+</style></head><body>
+<canvas id="matrix"></canvas>
+<div class="lightning"></div>
+<div class="scan"></div>
+<div class="c">${content}</div>
+<script>
+const c=document.getElementById('matrix'),x=c.getContext('2d');
+function rs(){c.width=window.innerWidth;c.height=window.innerHeight}
+rs();window.addEventListener('resize',rs);
+const ch='01アイウエオカキクケコサシスセソタチツテト<>{}[]/\\\\$#@!%&*+=';
+const fs=14;let cols=Math.floor(c.width/fs);let drops=Array(cols).fill(1);
+setInterval(()=>{x.fillStyle='rgba(0,0,0,0.05)';x.fillRect(0,0,c.width,c.height);
+x.fillStyle='#00ff88';x.font=fs+'px monospace';
+for(let i=0;i<drops.length;i++){const t=ch[Math.floor(Math.random()*ch.length)];
+x.fillText(t,i*fs,drops[i]*fs);if(drops[i]*fs>c.height&&Math.random()>.975)drops[i]=0;drops[i]++}},33);
+window.addEventListener('resize',()=>{cols=Math.floor(c.width/fs);drops=Array(cols).fill(1)});
+</script>
+<script>
+document.querySelectorAll('.qt-row').forEach(row=>{
+  const target=document.getElementById(row.dataset.target);
+  row.querySelectorAll('.qt').forEach(b=>{
+    b.addEventListener('click',()=>{
+      const cur=target.value?target.value.split(','):[];
+      if(cur.length>=5){alert('Max 5 results');return}
+      cur.push(b.dataset.v);
+      target.value=cur.join(',');
+    });
+  });
+});
+document.querySelectorAll('.toggle').forEach(t=>{
+  t.addEventListener('click',()=>{
+    document.querySelectorAll('.toggle').forEach(x=>x.classList.remove('active'));
+    t.classList.add('active');
+    document.getElementById('typeInput').value=t.dataset.type;
+    const sel=document.getElementById('platformSel');
+    const platforms=${JSON.stringify(PLATFORMS)};
+    sel.innerHTML=platforms[t.dataset.type].map(p=>'<option value="'+p.id+'">'+p.name+' — '+(p.game||p.country)+'</option>').join('');
+  });
+});
+async function loadStats(){
+  try{
+    const r=await fetch('/api/stats');const s=await r.json();
+    const rate=s.total>0?Math.round(s.wins/s.total*1000)/10:0;
+    const h=document.getElementById('h-total');if(h)h.textContent=s.total;
+    const hr=document.getElementById('h-rate');if(hr)hr.textContent=rate+'%';
+    const dt=document.getElementById('d-total');if(dt)dt.textContent=s.total;
+    const dw=document.getElementById('d-wins');if(dw)dw.textContent=s.wins;
+    const dl=document.getElementById('d-losses');if(dl)dl.textContent=s.total-s.wins;
+    const dr=document.getElementById('d-rate');if(dr)dr.textContent=rate+'%';
+    const pr=await fetch('/api/patterns');const p=await pr.json();
+    const rules=p.rules||{};
+    const active=Object.values(rules).filter(r=>r.total>=10).length;
+    const ap=document.getElementById('active-patterns');if(ap)ap.textContent=active;
+    if(p.lastUpdate){const lu=document.getElementById('last-update');if(lu)lu.textContent=new Date(p.lastUpdate).toLocaleString()}
+  }catch(e){}}
+loadStats();
+async function loadPatterns(){
+  try{
+    const r=await fetch('/api/patterns');const p=await r.json();
+    const list=document.getElementById('patterns-list');
+    if(!list)return;
+    const rules=p.rules||{};
+    const active=Object.entries(rules).filter(([k,v])=>v.total>=10).sort((a,b)=>b[1].confidence-a[1].confidence);
+    if(!active.length){list.innerHTML='No active patterns yet. <b class="hl">Log 10+ results</b> to start seeing insights.';return}
+    list.innerHTML=active.map(([key,r])=>{
+      const readable=key.replace(/_/g,' ').replace(/\\d+/g,'').toUpperCase();
+      return '<div class="pattern-item"><b class="hl">'+readable+'</b><br><span class="muted">'+r.hits+' wins / '+r.total+' games = <b class="hl">'+r.confidence+'%</b> accuracy</span></div>';
+    }).join('');
+  }catch(e){}}
+loadPatterns();
+async function loadHistory(){
+  try{const r=await fetch('/api/predictions');const p=await r.json();
+  const h=document.getElementById('hist');if(!h)return;
+  if(!p.length){h.innerHTML='No predictions yet.';return}
+  h.innerHTML=p.map(x=>'<div style="padding:10px;border-bottom:1px solid #222"><div style="display:flex;justify-content:space-between"><b class="hl">'+x.match+'</b><span style="color:var(--gray);font-size:10px">'+x.platform.toUpperCase()+'</span></div><div style="color:var(--gray);font-size:11px;margin-top:3px">'+new Date(x.time).toLocaleString()+'</div><div style="font-size:11px;margin-top:4px">Status: '+(x.status==='win'?'<b class="hl">WIN</b>':x.status==='lose'?'<b class="warn-text">LOSE</b>':'<span class="muted">PENDING</span>')+'</div></div>').join('');
+  }catch(e){}}
+loadHistory();
+const af=document.getElementById('af');
+if(af)af.addEventListener('submit',async e=>{
+  e.preventDefault();
+  const btn=af.querySelector('button[type=submit]');
+  const orig=btn.textContent;btn.disabled=true;btn.textContent='AI ANALYZING...';
+  const fd=new FormData(af);
+  try{
+    const r=await fetch('/api/analyze',{method:'POST',body:fd});
+    const d=await r.json();
+    if(d.ok){
+      const res=document.getElementById('result');
+      const aiTag=d.picks[0].why.includes('AI')||d.picks[0].why.length>50?'<span class="tag2" style="margin-left:5px">AI</span>':'';
+      res.innerHTML='<div class="head"><div style="font-size:18px;font-weight:800">'+d.teamA+' <span class="hl">VS</span> '+d.teamB+'</div><div style="color:var(--gray);font-size:10px;letter-spacing:2px;margin-top:5px">'+d.platform.toUpperCase()+' • '+d.type.toUpperCase()+aiTag+'</div></div>'+d.picks.map((p,i)=>'<div class="card"><div style="display:flex;justify-content:space-between;align-items:center"><span class="tag2">PICK #'+(i+1)+'</span><span class="risk-'+p.risk+'" style="padding:3px 10px;border-radius:15px;font-size:10px;font-weight:900">'+p.risk.toUpperCase()+'</span></div><div class="name">'+p.pick+'</div><div class="conf">'+p.conf+'%</div><div class="why">'+p.why+'</div><div class="btns"><form><input type="hidden" value="'+d.predId+'" name="pid"><input type="hidden" value="'+d.teamA+' vs '+d.teamB+'" name="m"><input type="hidden" value="'+p.pick+'" name="p"><button class="w" name="o" value="win">WIN</button><button class="l" name="o" value="lose">LOSE</button></form></div></div>').join('')+'<a href="/analyze" class="btn">NEW ANALYSIS</a>';
+      res.scrollIntoView({behavior:'smooth'});
+      res.querySelectorAll('form').forEach(f=>f.addEventListener('submit',async ev=>{
+        ev.preventDefault();
+        const fd=new FormData();
+        fd.append('predId',f.querySelector('[name=pid]').value);
+        fd.append('match',f.querySelector('[name=m]').value);
+        fd.append('pick',f.querySelector('[name=p]').value);
+        fd.append('outcome',ev.submitter.value);
+        await fetch('/api/result',{method:'POST',body:fd});
+        alert('Logged! Pattern engine + AI updated.');
+        loadStats();loadHistory();loadPatterns();
+      }));
+    }
+  }catch(e){alert('Error: '+e.message)}
+  btn.disabled=false;btn.textContent=orig;
+});
+const askBtn=document.getElementById('askBtn');
+if(askBtn)askBtn.addEventListener('click',async()=>{
+  const q=document.getElementById('aiQuestion').value.trim();
+  if(!q){alert('Please ask a question');return}
+  askBtn.disabled=true;askBtn.textContent='AI THINKING...';
+  const fd=new FormData();fd.append('question',q);
+  try{
+    const r=await fetch('/api/ai/ask',{method:'POST',body:fd});
+    const d=await r.json();
+    const box=document.getElementById('aiResponse');
+    const txt=document.getElementById('aiText');
+    if(d.ok){
+      txt.textContent=d.reply;
+      box.style.display='block';
+      box.scrollIntoView({behavior:'smooth'});
+    }else{
+      alert('AI error: '+(d.error||'unknown'));
+    }
+  }catch(e){alert('Error: '+e.message)}
+  askBtn.disabled=false;askBtn.textContent='⚡ ASK AI ⚡';
+});
+async function adminLogin(){
+  const p=document.getElementById('pass').value;
+  const fd=new FormData();fd.append('password',p);
+  const r=await fetch('/api/admin/login',{method:'POST',body:fd});
+  const d=await r.json();
+  if(d.ok){
+    document.getElementById('login-card').style.display='none';
+    document.getElementById('panel').style.display='block';
+    const sr=await fetch('/api/stats');const ss=await sr.json();
+    const rate=ss.total>0?Math.round(ss.wins/ss.total*1000)/10:0;
+    document.getElementById('a-stats').innerHTML='<div style="margin:8px 0"><b class="hl">Total:</b> '+ss.total+'</div><div style="margin:8px 0"><b class="hl">Wins:</b> '+ss.wins+'</div><div style="margin:8px 0"><b class="hl">Win Rate:</b> '+rate+'%</div>';
+    const pr=await fetch('/api/patterns');const pp=await pr.json();
+    const rules=Object.values(pp.rules||{});
+    const active=rules.filter(r=>r.total>=10).length;
+    document.getElementById('a-patterns').innerHTML='<div style="margin:8px 0"><b class="hl">Active patterns:</b> '+active+'</div><div style="margin:8px 0"><b class="hl">Total samples:</b> '+rules.reduce((a,r)=>a+r.total,0)+'</div><div style="margin:8px 0"><b class="hl">Last update:</b> '+(pp.lastUpdate?new Date(pp.lastUpdate).toLocaleString():'Never')+'</div>';
+  }else alert('Wrong password');
+}
+</script>
+</body></html>`;
+}
