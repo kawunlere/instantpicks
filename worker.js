@@ -11,11 +11,7 @@ export default {
       "/patterns": "patterns",
       "/learn": "learn",
       "/about": "about",
-      "/admin": "admin",
-      "/admin/users": "admin",
-      "/admin/settings": "admin",
-      "/admin/patterns": "admin",
-      "/admin/data": "admin"
+      "/admin": "admin"
     };
     
     if (path === "/api/analyze" && request.method === "POST") return await apiAnalyze(request, env);
@@ -32,6 +28,37 @@ export default {
 
 const ADMIN_PASS = "kawunlere2024";
 
+const PLATFORMS = {
+  virtual: [
+    {id: "sportybet", name: "Sportybet", game: "Instant Virtual", country: "Nigeria"},
+    {id: "bet9ja", name: "Bet9ja", game: "Virtual League", country: "Nigeria"},
+    {id: "betway", name: "Betway", game: "Virtual", country: "Nigeria"},
+    {id: "1xbet", name: "1xBet", game: "Virtual Football", country: "Worldwide"},
+    {id: "football_com", name: "Football.com", game: "Instant Virtual", country: "Nigeria"},
+    {id: "betking", name: "BetKing", game: "Virtual League", country: "Nigeria"},
+    {id: "nairabet", name: "NairaBet", game: "Virtual", country: "Nigeria"},
+    {id: "merrybet", name: "MerryBet", game: "Virtual", country: "Nigeria"},
+    {id: "msport", name: "MSport", game: "Virtual", country: "Nigeria"},
+    {id: "bangbet", name: "Bangbet", game: "Virtual", country: "Nigeria"},
+    {id: "parimatch", name: "Parimatch", game: "Virtual", country: "Worldwide"},
+    {id: "livescorebet", name: "LivescoreBet", game: "Virtual", country: "Worldwide"},
+    {id: "22bet", name: "22Bet", game: "Virtual", country: "Worldwide"},
+    {id: "pinnacle", name: "Pinnacle", game: "Virtual", country: "Worldwide"}
+  ],
+  real: [
+    {id: "sportybet", name: "Sportybet", country: "Nigeria"},
+    {id: "bet9ja", name: "Bet9ja", country: "Nigeria"},
+    {id: "betway", name: "Betway", country: "Worldwide"},
+    {id: "1xbet", name: "1xBet", country: "Worldwide"},
+    {id: "bet365", name: "Bet365", country: "Worldwide"},
+    {id: "betking", name: "BetKing", country: "Nigeria"},
+    {id: "nairabet", name: "NairaBet", country: "Nigeria"},
+    {id: "msport", name: "MSport", country: "Nigeria"},
+    {id: "parimatch", name: "Parimatch", country: "Worldwide"},
+    {id: "stake", name: "Stake.com", country: "Worldwide"}
+  ]
+};
+
 async function apiAnalyze(request, env) {
   const form = await request.formData();
   const platform = form.get("platform") || "sportybet";
@@ -42,14 +69,16 @@ async function apiAnalyze(request, env) {
   const formB = (form.get("form_b") || "").toUpperCase().replace(/\s/g, "").split(",");
   const tableA = parseInt(form.get("table_a")) || 5;
   const tableB = parseInt(form.get("table_b")) || 5;
+  const conversation = form.get("conversation") || "";
   
-  const recs = generatePicks(formA, formB, tableA, tableB, type, platform);
+  const recs = generatePicks(formA, formB, tableA, tableB, type, platform, conversation);
   
   if (env.PICKS_KV) {
     await env.PICKS_KV.put(`p_${Date.now()}`, JSON.stringify({
       time: new Date().toISOString(),
       platform, type,
       match: `${teamA} vs ${teamB}`,
+      conversation,
       picks: recs
     }));
   }
@@ -101,26 +130,32 @@ async function adminLogin(request) {
   return new Response(JSON.stringify({ ok: false }), { status: 401, headers: { "Content-Type": "application/json" } });
 }
 
-function generatePicks(fA, fB, tA, tB, type, platform) {
+function generatePicks(fA, fB, tA, tB, type, platform, conversation) {
   const sA = fA.reduce((s, r) => s + (r === "W" ? 3 : r === "D" ? 1 : 0), 0);
   const sB = fB.reduce((s, r) => s + (r === "W" ? 3 : r === "D" ? 1 : 0), 0);
   const diff = sA - sB;
   const gap = tA - tB;
+  const conv = conversation.toLowerCase();
   
   const recs = [];
   
+  let convBoost = 0;
+  if (conv.includes("attack") || conv.includes("pressing") || conv.includes("fast")) convBoost += 5;
+  if (conv.includes("defensive") || conv.includes("slow") || conv.includes("careful")) convBoost -= 3;
+  if (conv.includes("injured") || conv.includes("weak")) convBoost -= 5;
+  
   if (type === "virtual") {
-    if (diff > 3) recs.push({ pick: "Home Win (1)", conf: 68, risk: "medium", why: "Team A dominant form (3+ pts ahead)" });
-    else if (diff < -3) recs.push({ pick: "Away Win (2)", conf: 64, risk: "medium", why: "Team B stronger form" });
-    else recs.push({ pick: "Over 1.5 Goals", conf: 72, risk: "low", why: "Virtuals score frequently" });
+    if (diff > 3) recs.push({ pick: "Home Win (1)", conf: Math.min(75, 68 + convBoost), risk: "medium", why: "Team A dominant form" + (convBoost > 0 ? " + your description suggests strong attack" : "") });
+    else if (diff < -3) recs.push({ pick: "Away Win (2)", conf: Math.min(70, 64 + convBoost), risk: "medium", why: "Team B stronger" });
+    else recs.push({ pick: "Over 1.5 Goals", conf: Math.min(80, 72 + convBoost), risk: "low", why: "Virtuals score often" + (convBoost > 0 ? " + your input confirms attacking play" : "") });
     
-    recs.push({ pick: "BTTS: Yes", conf: 58, risk: "medium", why: "Both teams attacking pattern" });
+    recs.push({ pick: "BTTS: Yes", conf: 58 + Math.floor(convBoost/2), risk: "medium", why: "Both teams attacking pattern" });
     recs.push({ pick: "Double Chance (1X)", conf: 75, risk: "low", why: "Safe play on home" });
-    recs.push({ pick: "Over 2.5 Goals", conf: 52, risk: "high", why: "High-scoring virtual match" });
+    recs.push({ pick: "Over 2.5 Goals", conf: 52 + Math.floor(convBoost/2), risk: "high", why: "High-scoring virtual" });
   } else {
-    if (diff > 3 && gap < 0) recs.push({ pick: "Home Win (1)", conf: 66, risk: "medium", why: "Form + position favor home" });
-    else if (diff < -3) recs.push({ pick: "Away Win (2)", conf: 62, risk: "medium", why: "Away team superior" });
-    else recs.push({ pick: "Double Chance (1X or X2)", conf: 75, risk: "low", why: "Balanced match — play safe" });
+    if (diff > 3 && gap < 0) recs.push({ pick: "Home Win (1)", conf: 66 + convBoost, risk: "medium", why: "Form + position favor home" });
+    else if (diff < -3) recs.push({ pick: "Away Win (2)", conf: 62 + convBoost, risk: "medium", why: "Away team superior" });
+    else recs.push({ pick: "Double Chance (1X or X2)", conf: 75, risk: "low", why: "Balanced match" });
     
     recs.push({ pick: "Under 3.5 Goals", conf: 70, risk: "low", why: "Tight match expected" });
     recs.push({ pick: "BTTS: No", conf: 60, risk: "medium", why: "Defensive setup likely" });
@@ -132,18 +167,28 @@ function generatePicks(fA, fB, tA, tB, type, platform) {
   return recs.slice(0, 5);
 }
 
+const ICONS = {
+  home: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12L12 3L21 12M5 10V21H19V10"/></svg>',
+  analyze: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="M21 21L16.65 16.65M11 8V14M8 11H14"/></svg>',
+  dashboard: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/></svg>',
+  history: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3V21H21M7 16L12 11L15 14L21 8"/></svg>',
+  patterns: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 1V3M12 21V23M4.22 4.22L5.64 5.64M18.36 18.36L19.78 19.78M1 12H3M21 12H23M4.22 19.78L5.64 18.36M18.36 5.64L19.78 4.22"/></svg>',
+  learn: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 3H8C9 3 10 4 10 5V21C10 20 9 19 8 19H2V3M22 3H16C15 3 14 4 14 5V21C14 20 15 19 16 19H22V3M7 7H5M7 11H5M7 15H5M19 7H17M19 11H17M19 15H17"/></svg>',
+  lock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7C7 4.24 9.24 2 12 2C14.76 2 17 4.24 17 7V11"/></svg>'
+};
+
 function nav(active) {
   const items = [
-    ["home", "⚡ HOME"],
-    ["analyze", "🎯 ANALYZE"],
-    ["dashboard", "📊 DASHBOARD"],
-    ["history", "📋 HISTORY"],
-    ["patterns", "🧠 PATTERNS"],
-    ["learn", "📚 LEARN"]
+    ["home", "HOME", ICONS.home],
+    ["analyze", "ANALYZE", ICONS.analyze],
+    ["dashboard", "STATS", ICONS.dashboard],
+    ["history", "HISTORY", ICONS.history],
+    ["patterns", "PATTERNS", ICONS.patterns],
+    ["learn", "LEARN", ICONS.learn]
   ];
-  return `<div class="nav">${items.map(([k, v]) => 
-    `<a href="/${k === 'home' ? '' : k}" class="${active === k ? 'active' : ''}">${v}</a>`
-  ).join("")}<a href="/admin" class="admin-btn ${active === 'admin' ? 'active' : ''}">🔐</a></div>`;
+  return `<div class="nav">${items.map(([k, v, icon]) => 
+    `<a href="/${k === 'home' ? '' : k}" class="${active === k ? 'active' : ''}"><span class="icon">${icon}</span><span>${v}</span></a>`
+  ).join("")}<a href="/admin" class="admin-btn ${active === 'admin' ? 'active' : ''}"><span class="icon">${ICONS.lock}</span></a></div>`;
 }
 
 const pages = {
@@ -152,75 +197,71 @@ const pages = {
 <div class="hero">
   <div class="hero-stat"><div class="num" id="h-total">0</div><div class="lbl">ANALYSES</div></div>
   <div class="hero-stat"><div class="num" id="h-rate">0%</div><div class="lbl">WIN RATE</div></div>
-  <div class="hero-stat"><div class="num">3</div><div class="lbl">PLATFORMS</div></div>
+  <div class="hero-stat"><div class="num">14</div><div class="lbl">PLATFORMS</div></div>
 </div>
 <div class="card glow">
-  <h2 class="ct">🎯 WELCOME TO INSTANT PICKS</h2>
-  <p class="txt">Your intelligent betting co-pilot. We analyze patterns, form, and stats to give you the <b style="color:var(--green)">safest picks</b> across multiple platforms.</p>
-  <p class="txt" style="margin-top:10px">Built on <b style="color:var(--green)">discipline</b>, <b style="color:var(--green)">value detection</b>, and <b style="color:var(--green)">pattern recognition</b> — not false promises.</p>
-  <a href="/analyze" class="btn">⚡ START ANALYZING ⚡</a>
+  <h2 class="ct">WELCOME TO INSTANT PICKS</h2>
+  <p class="txt">Your intelligent betting co-pilot. We analyze patterns, form, and stats to give you the <b class="hl">safest picks</b> across multiple platforms.</p>
+  <p class="txt" style="margin-top:10px">Built on <b class="hl">discipline</b>, <b class="hl">value detection</b>, and <b class="hl">pattern recognition</b> — not false promises.</p>
+  <a href="/analyze" class="btn">START ANALYZING</a>
 </div>
 <div class="card">
-  <h3 class="ct">⚡ HOW IT WORKS</h3>
+  <h3 class="ct">HOW IT WORKS</h3>
   <div class="steps">
-    <div class="step"><div class="sn">1</div><div><b>SELECT</b><br><span class="muted">Choose platform & match type</span></div></div>
-    <div class="step"><div class="sn">2</div><div><b>INPUT</b><br><span class="muted">Enter teams & form</span></div></div>
-    <div class="step"><div class="sn">3</div><div><b>ANALYZE</b><br><span class="muted">Get smart picks</span></div></div>
-    <div class="step"><div class="sn">4</div><div><b>TRACK</b><br><span class="muted">Log results, learn more</span></div></div>
-  </div>
-</div>
-<div class="card">
-  <h3 class="ct">🎮 SUPPORTED PLATFORMS</h3>
-  <div class="platforms">
-    <div class="pf">SPORTYBET</div>
-    <div class="pf">BET9JA</div>
-    <div class="pf">BETWAY</div>
+    <div class="step"><div class="sn">1</div><div><b>SELECT</b><br><span class="muted">Platform & type</span></div></div>
+    <div class="step"><div class="sn">2</div><div><b>INPUT</b><br><span class="muted">Teams & form</span></div></div>
+    <div class="step"><div class="sn">3</div><div><b>DESCRIBE</b><br><span class="muted">How game is playing</span></div></div>
+    <div class="step"><div class="sn">4</div><div><b>TRACK</b><br><span class="muted">Log & learn</span></div></div>
   </div>
 </div>
 <div class="card warn">
-  <b style="color:var(--red)">⚠️ DISCIPLINE FIRST</b>
-  <p class="muted" style="margin-top:8px">No tool guarantees wins. INSTANT PICKS helps you make smarter decisions, but always bet within your means. Set daily limits. Take breaks.</p>
+  <b class="warn-text">⚠ DISCIPLINE FIRST</b>
+  <p class="muted" style="margin-top:8px">No tool guarantees wins. INSTANT PICKS helps you make smarter decisions, but always bet within your means.</p>
 </div>`,
 
   analyze: `${nav("analyze")}
 <div class="head"><div class="logo">⚡ ANALYZE ⚡</div><div class="tag">SMART MATCH ANALYSIS</div></div>
 <div class="card">
-  <h3 class="ct">STEP 1: SELECT</h3>
   <form id="af">
+    <label>MODE</label>
+    <div class="toggle-row">
+      <label class="toggle active" data-type="virtual">VIRTUAL</label>
+      <label class="toggle" data-type="real">REAL FOOTBALL</label>
+    </div>
+    <input type="hidden" name="type" id="typeInput" value="virtual">
+    
     <label>PLATFORM</label>
-    <select name="platform">
-      <option value="sportybet">SPORTYBET</option>
-      <option value="bet9ja">BET9JA</option>
-      <option value="betway">BETWAY</option>
-    </select>
-    <label>MATCH TYPE</label>
-    <select name="type">
-      <option value="virtual">VIRTUAL</option>
-      <option value="real">REAL FOOTBALL</option>
-    </select>
-    <h3 class="ct" style="margin-top:25px">STEP 2: TEAMS</h3>
+    <select name="platform" id="platformSel">${PLATFORMS.virtual.map(p => `<option value="${p.id}">${p.name} — ${p.game}</option>`).join("")}</select>
+    
     <label>TEAM A</label>
     <input name="team_a" placeholder="e.g. Manchester United" required>
     <label>TEAM B</label>
     <input name="team_b" placeholder="e.g. Liverpool" required>
-    <label>TEAM A — LAST 5 RESULTS (W/L/D)</label>
+    
+    <label>TEAM A — LAST 5 (W/L/D)</label>
     <div class="qt-row" data-target="form_a">
       <button type="button" class="qt" data-v="W">W</button>
       <button type="button" class="qt" data-v="D">D</button>
       <button type="button" class="qt" data-v="L">L</button>
     </div>
     <input name="form_a" id="form_a" placeholder="W,L,D,W,W" required>
-    <label>TEAM B — LAST 5 RESULTS (W/L/D)</label>
+    
+    <label>TEAM B — LAST 5 (W/L/D)</label>
     <div class="qt-row" data-target="form_b">
       <button type="button" class="qt" data-v="W">W</button>
       <button type="button" class="qt" data-v="D">D</button>
       <button type="button" class="qt" data-v="L">L</button>
     </div>
     <input name="form_b" id="form_b" placeholder="L,W,L,D,W" required>
+    
     <div class="row">
       <div><label>TEAM A POSITION</label><input name="table_a" type="number" placeholder="3" required></div>
       <div><label>TEAM B POSITION</label><input name="table_b" type="number" placeholder="7" required></div>
     </div>
+    
+    <label class="optional-label">HOW IS THE GAME PLAYING? (OPTIONAL — BUT HELPS AI)</label>
+    <textarea name="conversation" id="conv" rows="3" placeholder="e.g. Team A pressing high, Team B defensive, no goals yet, lots of corners..."></textarea>
+    
     <button type="submit" class="btn">⚡ ANALYZE ⚡</button>
   </form>
 </div>
@@ -235,112 +276,87 @@ const pages = {
   <div class="stat-card highlight"><div class="stat-num" id="d-rate">0%</div><div class="stat-lbl">WIN RATE</div></div>
 </div>
 <div class="card">
-  <h3 class="ct">📈 TODAY'S ACTIVITY</h3>
-  <div id="today" class="muted">Loading stats...</div>
+  <h3 class="ct">TODAY'S ACTIVITY</h3>
+  <div id="today" class="muted">Loading...</div>
 </div>
 <div class="card">
-  <h3 class="ct">🎯 BEST MARKETS</h3>
-  <div id="markets" class="muted">No data yet — make some analyses to see your best markets</div>
-</div>
-<div class="card">
-  <h3 class="ct">⚠️ DISCIPLINE ALERTS</h3>
+  <h3 class="ct">DISCIPLINE ALERTS</h3>
   <div id="alerts" class="muted">All clear. Keep being disciplined.</div>
 </div>
 <div class="card">
-  <a href="/analyze" class="btn">⚡ NEW ANALYSIS ⚡</a>
+  <a href="/analyze" class="btn">NEW ANALYSIS</a>
 </div>`,
 
   history: `${nav("history")}
 <div class="head"><div class="logo">⚡ HISTORY ⚡</div><div class="tag">YOUR PAST PREDICTIONS</div></div>
 <div class="card">
-  <h3 class="ct">📋 ALL PREDICTIONS</h3>
+  <h3 class="ct">ALL PREDICTIONS</h3>
   <div id="hist" class="muted">Loading...</div>
 </div>`,
 
   patterns: `${nav("patterns")}
 <div class="head"><div class="logo">⚡ PATTERNS ⚡</div><div class="tag">AI-DETECTED INSIGHTS</div></div>
 <div class="card glow">
-  <h3 class="ct">🧠 THE BRAIN IS LEARNING</h3>
-  <p class="txt">Patterns are detected automatically as more data flows in. The more you analyze and log results, the smarter this gets.</p>
+  <h3 class="ct">THE BRAIN IS LEARNING</h3>
+  <p class="txt">Patterns are detected automatically as more data flows in. The more you analyze, log results, and describe games, the smarter this gets.</p>
 </div>
 <div class="card">
-  <h3 class="ct">🔍 DETECTED PATTERNS</h3>
-  <div id="patterns" class="muted">No patterns yet — make 20+ analyses to start seeing insights</div>
-</div>
-<div class="card">
-  <h3 class="ct">⚡ PATTERN SHIFTS</h3>
-  <div class="muted">System watches for changes in platform behavior. Alerts appear here when shifts detected.</div>
+  <h3 class="ct">DETECTED PATTERNS</h3>
+  <div class="muted">No patterns yet — make 20+ analyses to start seeing insights</div>
 </div>`,
 
   learn: `${nav("learn")}
-<div class="head"><div class="logo">⚡ LEARN ⚡</div><div class="tag">BECOME A SMARTER BETTOR</div></div>
+<div class="head"><div class="logo">⚡ LEARN ⚡</div><div class="tag">SMARTER BETTING</div></div>
 <div class="card">
-  <h3 class="ct">💰 WHAT IS VALUE BETTING?</h3>
-  <p class="txt">Value betting means finding odds that are <b style="color:var(--green)">higher than the true probability</b>. If a team has 60% chance to win but odds are 2.20 (implying 45%), that's value.</p>
+  <h3 class="ct">VALUE BETTING</h3>
+  <p class="txt">Value betting means finding odds that are <b class="hl">higher than the true probability</b>. If a team has 60% chance but odds are 2.20 (implying 45%), that's value.</p>
 </div>
 <div class="card">
-  <h3 class="ct">📊 BANKROLL MANAGEMENT</h3>
-  <p class="txt">Never bet more than <b style="color:var(--green)">2-5%</b> of your bankroll on a single game. This protects you from losing streaks.</p>
+  <h3 class="ct">BANKROLL MANAGEMENT</h3>
+  <p class="txt">Never bet more than <b class="hl">2-5%</b> of your bankroll on a single game. Protects you from losing streaks.</p>
 </div>
 <div class="card">
-  <h3 class="ct">🎯 DISCIPLINE RULES</h3>
+  <h3 class="ct">DISCIPLINE RULES</h3>
   <ul class="list">
-    <li>Set a daily loss limit (e.g. 10% of bankroll)</li>
-    <li>Take a break after 3 losses in a row</li>
+    <li>Set a daily loss limit</li>
+    <li>Take a break after 3 losses</li>
     <li>Don't chase losses</li>
     <li>Only bet when there's value</li>
     <li>Track everything</li>
   </ul>
-</div>
-<div class="card">
-  <h3 class="ct">🤖 HOW INSTANT PICKS WORKS</h3>
-  <p class="txt">Our system combines rule-based analysis with AI learning. The more you use it, the smarter it gets. But remember — <b style="color:var(--red)">no tool guarantees 100% wins</b>.</p>
 </div>`,
 
   about: `${nav("about")}
 <div class="head"><div class="logo">⚡ ABOUT ⚡</div></div>
 <div class="card glow">
-  <h2 class="ct">🎯 OUR MISSION</h2>
-  <p class="txt">To help people make <b style="color:var(--green)">smarter, safer, more disciplined</b> betting decisions through intelligent analysis.</p>
+  <h2 class="ct">OUR MISSION</h2>
+  <p class="txt">To help people make <b class="hl">smarter, safer, more disciplined</b> betting decisions through intelligent analysis.</p>
 </div>
 <div class="card">
-  <h3 class="ct">📡 WHAT WE DO</h3>
-  <p class="txt">INSTANT PICKS analyzes patterns, form, and stats to suggest the safest picks. We don't promise miracles — we provide data-driven insights to help you bet smarter.</p>
-</div>
-<div class="card">
-  <h3 class="ct">⚠️ DISCLAIMER</h3>
-  <p class="txt">Betting carries risk. No prediction tool can guarantee wins. INSTANT PICKS is an analysis aid designed to help you make informed decisions. <b style="color:var(--red)">Bet responsibly. Never bet what you can't afford to lose.</b></p>
-</div>
-<div class="card">
-  <h3 class="ct">📞 CONTACT</h3>
-  <p class="muted">Built with passion by kawunlere</p>
+  <h3 class="ct">DISCLAIMER</h3>
+  <p class="txt">Betting carries risk. No tool guarantees wins. INSTANT PICKS is an analysis aid. <b class="warn-text">Bet responsibly.</b></p>
 </div>`,
 
   admin: `${nav("admin")}
 <div class="head"><div class="logo">⚡ ADMIN ⚡</div><div class="tag">CONTROL CENTER</div></div>
 <div class="card" id="login-card">
-  <h3 class="ct">🔐 ACCESS REQUIRED</h3>
+  <h3 class="ct">ACCESS REQUIRED</h3>
   <input type="password" id="pass" placeholder="Enter admin password" style="margin-top:15px">
   <button class="btn" onclick="adminLogin()">UNLOCK</button>
 </div>
 <div id="panel" style="display:none">
   <div class="card">
-    <h3 class="ct">📊 SYSTEM STATS</h3>
+    <h3 class="ct">SYSTEM STATS</h3>
     <div id="a-stats" class="muted">Loading...</div>
   </div>
   <div class="card">
-    <h3 class="ct">📋 ALL PREDICTIONS</h3>
+    <h3 class="ct">ALL PREDICTIONS</h3>
     <div id="a-preds" class="muted">Loading...</div>
   </div>
   <div class="card">
-    <h3 class="ct">🧠 AI BRAIN STATUS</h3>
-    <div class="muted">AI Engine: <b style="color:var(--green)">ACTIVE</b> — Learning from every result</div>
-    <div class="muted" style="margin-top:5px">Analysis Engine: <b style="color:var(--green)">ACTIVE</b> — Rule-based recommendations</div>
-    <div class="muted" style="margin-top:5px">Last Retrain: <b style="color:var(--green)">Auto (continuous)</b></div>
-  </div>
-  <div class="card warn">
-    <h3 class="ct" style="color:var(--red)">⚠️ DANGER ZONE</h3>
-    <button class="btn" style="background:#1a0000;color:var(--red);border:1px solid var(--red);box-shadow:none" onclick="if(confirm('This will reset ALL data. Are you sure?')){alert('Contact developer to execute reset')}">RESET ALL DATA</button>
+    <h3 class="ct">AI BRAIN STATUS</h3>
+    <div class="muted">AI Engine: <b class="hl">READY</b> (Groq integration in Phase 4)</div>
+    <div class="muted" style="margin-top:5px">Pattern Engine: <b class="hl">ACTIVE</b></div>
   </div>
 </div>`
 };
@@ -358,26 +374,34 @@ canvas#matrix{position:fixed;top:0;left:0;width:100%;height:100%;z-index:0;opaci
 @keyframes scan{0%{top:0}100%{top:100%}}
 .c{position:relative;z-index:2;max-width:560px;margin:0 auto;padding:12px}
 .nav{display:flex;gap:4px;margin-bottom:18px;flex-wrap:wrap;background:rgba(0,0,0,.6);padding:6px;border-radius:10px;border:1px solid rgba(0,255,136,.2);backdrop-filter:blur(10px)}
-.nav a{flex:1;min-width:60px;text-align:center;padding:9px 4px;color:var(--gray);text-decoration:none;font-size:10px;font-weight:700;letter-spacing:1px;border-radius:6px;transition:.3s}
-.nav a.active,.nav a:hover{background:rgba(0,255,136,.15);color:var(--green);text-shadow:0 0 5px var(--green)}
-.nav a.admin-btn{background:rgba(255,51,51,.1);color:var(--red)}
+.nav a{flex:1;min-width:60px;text-align:center;padding:9px 4px;color:var(--gray);text-decoration:none;font-size:10px;font-weight:700;letter-spacing:1px;border-radius:6px;transition:.3s;display:flex;flex-direction:column;align-items:center;gap:3px}
+.nav a .icon{width:18px;height:18px;display:block}
+.nav a .icon svg{width:100%;height:100%;stroke:var(--gray);transition:.3s}
+.nav a.active,.nav a:hover{background:rgba(0,255,136,.15);color:var(--green)}
+.nav a.active .icon svg,.nav a:hover .icon svg{stroke:var(--green);filter:drop-shadow(0 0 5px var(--green))}
+.nav a.admin-btn{background:rgba(255,51,51,.1)}
+.nav a.admin-btn .icon svg{stroke:var(--red)}
 .nav a.admin-btn.active{background:rgba(255,51,51,.3);color:var(--red)}
 .head{text-align:center;padding:20px 0 15px;border-bottom:1px solid rgba(0,255,136,.2);margin-bottom:20px}
-.logo{font-size:30px;font-weight:900;color:var(--green);text-shadow:0 0 20px var(--green);letter-spacing:3px;animation:glow 2s infinite alternate}
+.logo{font-size:28px;font-weight:900;color:var(--green);text-shadow:0 0 20px var(--green);letter-spacing:3px;animation:glow 2s infinite alternate}
 @keyframes glow{from{text-shadow:0 0 10px var(--green)}to{text-shadow:0 0 30px var(--green),0 0 50px var(--green)}}
 .tag{color:var(--gray);font-size:10px;margin-top:6px;letter-spacing:3px}
 .card{background:linear-gradient(135deg,rgba(0,255,136,.03),var(--card));border:1px solid rgba(0,255,136,.2);border-radius:12px;padding:18px;margin:10px 0;backdrop-filter:blur(10px)}
 .card.glow{box-shadow:0 0 30px rgba(0,255,136,.1);border-color:rgba(0,255,136,.4)}
 .card.warn{border-color:rgba(255,51,51,.3);background:linear-gradient(135deg,rgba(255,51,51,.05),var(--card))}
-.ct{color:var(--green);margin-bottom:12px;font-size:16px;letter-spacing:1px}
+.ct{color:var(--green);margin-bottom:12px;font-size:15px;letter-spacing:1px}
 .txt{color:#ccc;line-height:1.6;font-size:13px}
+.hl{color:var(--green);text-shadow:0 0 5px var(--green)}
+.warn-text{color:var(--red);text-shadow:0 0 5px var(--red)}
 .muted{color:var(--gray);font-size:13px;line-height:1.6}
 label{display:block;color:var(--green);font-size:11px;font-weight:700;margin:14px 0 6px;letter-spacing:2px}
-input,select{width:100%;padding:13px;background:rgba(0,0,0,.5);color:#fff;border:1px solid #333;border-radius:8px;font-size:14px;font-family:inherit}
-input:focus,select:focus{outline:none;border-color:var(--green);box-shadow:0 0 10px rgba(0,255,136,.3)}
+.optional-label{color:var(--yellow);font-size:10px}
+input,select,textarea{width:100%;padding:13px;background:rgba(0,0,0,.5);color:#fff;border:1px solid #333;border-radius:8px;font-size:14px;font-family:inherit}
+input:focus,select:focus,textarea:focus{outline:none;border-color:var(--green);box-shadow:0 0 10px rgba(0,255,136,.3)}
+textarea{resize:vertical;min-height:60px}
 .row{display:flex;gap:10px;margin-top:5px}.row>div{flex:1}
 .btn{width:100%;padding:15px;background:linear-gradient(135deg,var(--green),var(--dark-green));color:#000;font-weight:900;font-size:13px;border:none;border-radius:8px;margin-top:18px;cursor:pointer;text-transform:uppercase;letter-spacing:2px;font-family:inherit;box-shadow:0 0 20px rgba(0,255,136,.4);transition:.3s;text-decoration:none;display:inline-block;text-align:center}
-.btn:hover{box-shadow:0 0 40px rgba(0,255,136,.7);transform:translateY(-1px)}
+.btn:hover{box-shadow:0 0 40px rgba(0,255,136,.7)}
 .hero{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:15px 0}
 .hero-stat{background:var(--card);border:1px solid rgba(0,255,136,.2);border-radius:10px;padding:12px;text-align:center}
 .hero-stat .num{font-size:24px;font-weight:900;color:var(--green);text-shadow:0 0 10px var(--green)}
@@ -390,8 +414,9 @@ input:focus,select:focus{outline:none;border-color:var(--green);box-shadow:0 0 1
 .steps{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-top:10px}
 .step{display:flex;gap:10px;align-items:flex-start;padding:10px;background:rgba(0,0,0,.3);border-radius:8px;border:1px solid #222}
 .sn{background:var(--green);color:#000;width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:900;flex-shrink:0}
-.platforms{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}
-.pf{flex:1;min-width:90px;text-align:center;padding:12px;background:rgba(0,255,136,.05);border:1px solid rgba(0,255,136,.3);border-radius:8px;font-weight:700;letter-spacing:1px;font-size:12px}
+.toggle-row{display:flex;gap:6px;margin:8px 0}
+.toggle{flex:1;text-align:center;padding:12px;background:rgba(0,0,0,.5);border:1px solid #333;border-radius:8px;cursor:pointer;font-size:12px;font-weight:700;letter-spacing:1px;color:var(--gray);transition:.3s}
+.toggle.active{background:rgba(0,255,136,.15);border-color:var(--green);color:var(--green);box-shadow:0 0 10px rgba(0,255,136,.2)}
 .qt-row{display:flex;gap:6px;margin:8px 0}
 .qt{flex:1;padding:10px;background:rgba(0,0,0,.5);color:#fff;border:1px solid #333;border-radius:6px;cursor:pointer;font-family:inherit;font-weight:700;transition:.2s}
 .qt:hover,.qt:active{background:rgba(0,255,136,.2);border-color:var(--green)}
@@ -437,6 +462,17 @@ document.querySelectorAll('.qt-row').forEach(row=>{
     });
   });
 });
+document.querySelectorAll('.toggle').forEach(t=>{
+  t.addEventListener('click',()=>{
+    document.querySelectorAll('.toggle').forEach(x=>x.classList.remove('active'));
+    t.classList.add('active');
+    const type=t.dataset.type;
+    document.getElementById('typeInput').value=type;
+    const sel=document.getElementById('platformSel');
+    const platforms=${JSON.stringify(PLATFORMS)};
+    sel.innerHTML=platforms[type].map(p=>'<option value="'+p.id+'">'+p.name+' — '+(p.game||p.country)+'</option>').join('');
+  });
+});
 async function loadStats(){
   try{const r=await fetch('/api/stats');const s=await r.json();
   const rate=s.total>0?Math.round(s.wins/s.total*1000)/10:0;
@@ -447,10 +483,10 @@ async function loadStats(){
   const dl=document.getElementById('d-losses');if(dl)dl.textContent=s.total-s.wins;
   const dr=document.getElementById('d-rate');if(dr)dr.textContent=rate+'%';
   const today=document.getElementById('today');
-  if(today)today.innerHTML='<b style="color:var(--green)">'+s.total+'</b> analyses • <b style="color:var(--green)">'+s.wins+'</b> wins • <b style="color:var(--green)">'+rate+'%</b> accuracy';
+  if(today)today.innerHTML='<b class="hl">'+s.total+'</b> analyses • <b class="hl">'+s.wins+'</b> wins • <b class="hl">'+rate+'%</b> accuracy';
   if(s.total>=3){
     const losses=s.total-s.wins;
-    if(losses>=3){const al=document.getElementById('alerts');if(al)al.innerHTML='<b style="color:var(--red)">⚠️ 3+ losses detected</b> — Take a break. Re-analyze the pattern.'}
+    if(losses>=3){const al=document.getElementById('alerts');if(al)al.innerHTML='<b class="warn-text">3+ losses detected</b> — Take a break. Re-analyze.'}
   }
   }catch(e){}}
 loadStats();
@@ -458,7 +494,7 @@ async function loadHistory(){
   try{const r=await fetch('/api/predictions');const p=await r.json();
   const h=document.getElementById('hist');if(!h)return;
   if(!p.length){h.innerHTML='No predictions yet.';return}
-  h.innerHTML=p.map(x=>'<div style="padding:10px;border-bottom:1px solid #222"><div style="display:flex;justify-content:space-between"><b style="color:var(--green)">'+x.match+'</b><span style="color:var(--gray);font-size:10px">'+x.platform.toUpperCase()+' • '+x.type.toUpperCase()+'</span></div><div style="color:var(--gray);font-size:11px;margin-top:3px">'+new Date(x.time).toLocaleString()+'</div><div style="font-size:12px;margin-top:6px;color:#ccc">'+x.picks.slice(0,2).map(pk=>'<span style="color:var(--green)">●</span> '+pk.pick+' ('+pk.conf+'%)').join(' &nbsp; ')+'</div></div>').join('');
+  h.innerHTML=p.map(x=>'<div style="padding:10px;border-bottom:1px solid #222"><div style="display:flex;justify-content:space-between"><b class="hl">'+x.match+'</b><span style="color:var(--gray);font-size:10px">'+x.platform.toUpperCase()+'</span></div><div style="color:var(--gray);font-size:11px;margin-top:3px">'+new Date(x.time).toLocaleString()+'</div><div style="font-size:12px;margin-top:6px;color:#ccc">'+x.picks.slice(0,2).map(pk=>'<span class="hl">●</span> '+pk.pick+' ('+pk.conf+'%)').join(' &nbsp; ')+'</div></div>').join('');
   }catch(e){}}
 loadHistory();
 const af=document.getElementById('af');
@@ -469,17 +505,16 @@ if(af)af.addEventListener('submit',async e=>{
   const d=await r.json();
   if(d.ok){
     const res=document.getElementById('result');
-    res.innerHTML='<div class="head"><div style="font-size:18px;font-weight:800">'+d.teamA+' <span style="color:var(--green)">VS</span> '+d.teamB+'</div><div style="color:var(--gray);font-size:10px;letter-spacing:2px;margin-top:5px">'+d.platform.toUpperCase()+' • '+d.type.toUpperCase()+'</div></div>'+d.picks.map((p,i)=>'<div class="card"><div style="display:flex;justify-content:space-between;align-items:center"><span class="tag2">PICK #'+(i+1)+'</span><span class="risk-'+p.risk+'" style="padding:3px 10px;border-radius:15px;font-size:10px;font-weight:900">'+p.risk.toUpperCase()+' RISK</span></div><div class="name">'+p.pick+'</div><div class="conf">'+p.conf+'%</div><div class="why">'+p.why+'</div><div class="btns"><form><input type="hidden" value="'+d.teamA+' vs '+d.teamB+'" name="m"><input type="hidden" value="'+p.pick+'" name="p"><button class="w" name="o" value="win">✓ WIN</button><button class="l" name="o" value="lose">✗ LOSE</button></form></div></div>').join('')+'<a href="/analyze" class="btn">NEW ANALYSIS</a>';
+    res.innerHTML='<div class="head"><div style="font-size:18px;font-weight:800">'+d.teamA+' <span class="hl">VS</span> '+d.teamB+'</div><div style="color:var(--gray);font-size:10px;letter-spacing:2px;margin-top:5px">'+d.platform.toUpperCase()+' • '+d.type.toUpperCase()+'</div></div>'+d.picks.map((p,i)=>'<div class="card"><div style="display:flex;justify-content:space-between;align-items:center"><span class="tag2">PICK #'+(i+1)+'</span><span class="risk-'+p.risk+'" style="padding:3px 10px;border-radius:15px;font-size:10px;font-weight:900">'+p.risk.toUpperCase()+'</span></div><div class="name">'+p.pick+'</div><div class="conf">'+p.conf+'%</div><div class="why">'+p.why+'</div><div class="btns"><form><input type="hidden" value="'+d.teamA+' vs '+d.teamB+'" name="m"><input type="hidden" value="'+p.pick+'" name="p"><button class="w" name="o" value="win">WIN</button><button class="l" name="o" value="lose">LOSE</button></form></div></div>').join('')+'<a href="/analyze" class="btn">NEW ANALYSIS</a>';
     res.scrollIntoView({behavior:'smooth'});
     res.querySelectorAll('form').forEach(f=>f.addEventListener('submit',async ev=>{
       ev.preventDefault();
       const fd=new FormData();
       fd.append('match',f.querySelector('[name=m]').value);
       fd.append('pick',f.querySelector('[name=p]').value);
-      const o=ev.submitter.value;
-      fd.append('outcome',o);
+      fd.append('outcome',ev.submitter.value);
       await fetch('/api/result',{method:'POST',body:fd});
-      alert(o==='win'?'✅ WIN logged! System learned.':'❌ LOSE logged. System adjusted.');
+      alert('Logged! System learned.');
       loadStats();loadHistory();
     }));
   }
@@ -494,10 +529,10 @@ async function adminLogin(){
     document.getElementById('panel').style.display='block';
     const sr=await fetch('/api/stats');const ss=await sr.json();
     const rate=ss.total>0?Math.round(ss.wins/ss.total*1000)/10:0;
-    document.getElementById('a-stats').innerHTML='<div style="margin:8px 0"><b style="color:var(--green)">Total:</b> '+ss.total+'</div><div style="margin:8px 0"><b style="color:var(--green)">Wins:</b> '+ss.wins+'</div><div style="margin:8px 0"><b style="color:var(--green)">Win Rate:</b> '+rate+'%</div><div style="margin:8px 0"><b style="color:var(--green)">Losses:</b> '+(ss.total-ss.wins)+'</div>';
+    document.getElementById('a-stats').innerHTML='<div style="margin:8px 0"><b class="hl">Total:</b> '+ss.total+'</div><div style="margin:8px 0"><b class="hl">Wins:</b> '+ss.wins+'</div><div style="margin:8px 0"><b class="hl">Win Rate:</b> '+rate+'%</div>';
     const pr=await fetch('/api/predictions');const pp=await pr.json();
-    document.getElementById('a-preds').innerHTML=pp.length?pp.map(x=>'<div style="padding:10px;border-bottom:1px solid #222;margin:5px 0"><b style="color:var(--green)">'+x.match+'</b> <span style="color:var(--gray);font-size:10px">['+x.platform+'/'+x.type+']</span><br><span style="color:var(--gray);font-size:11px">'+new Date(x.time).toLocaleString()+'</span><br><span style="font-size:12px">'+x.picks.map(pk=>pk.pick+'('+pk.conf+'%)').join(', ')+'</span></div>').join(''):'No data yet — make some analyses first';
-  }else alert('❌ Wrong password');
+    document.getElementById('a-preds').innerHTML=pp.length?pp.map(x=>'<div style="padding:10px;border-bottom:1px solid #222;margin:5px 0"><b class="hl">'+x.match+'</b> <span style="color:var(--gray);font-size:10px">['+x.platform+'/'+x.type+']</span><br><span style="color:var(--gray);font-size:11px">'+new Date(x.time).toLocaleString()+'</span></div>').join(''):'No data yet';
+  }else alert('Wrong password');
 }
 </script>
 </body></html>`;
