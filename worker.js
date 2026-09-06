@@ -77,45 +77,50 @@ STRICT RULES:
 
 You focus 100% on your duty: smarter betting.`;
 
-async function callGroqAI(env, userMessage) {
-  if (!env.GROQ_API_KEY) {
+async function callGeminiAI(env, userMessage) {
+  if (!env.GEMINI_API_KEY) {
     return { ok: false, error: "API key not configured in Cloudflare" };
   }
   
   // Try multiple models in case one is unavailable
-  const models = ["llama-3.1-8b-instant", "llama-3.3-70b-versatile", "mixtral-8x7b-32768"];
+  const models = ["gemini-1.5-flash", "gemini-1.5-flash-8b", "gemini-pro"];
   
   for (const model of models) {
     try {
-      const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${env.GEMINI_API_KEY}`;
+      
+      const response = await fetch(url, {
         method: "POST",
         headers: {
-          "Authorization": `Bearer ${env.GROQ_API_KEY}`,
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
-          model: model,
-          messages: [
-            { role: "system", content: SYSTEM_PROMPT },
-            { role: "user", content: userMessage }
-          ],
-          max_tokens: 400,
-          temperature: 0.7
+          contents: [{
+            parts: [{
+              text: SYSTEM_PROMPT + "\n\nUser: " + userMessage
+            }]
+          }],
+          generationConfig: {
+            maxOutputTokens: 400,
+            temperature: 0.7
+          }
         })
       });
       
       if (response.ok) {
         const data = await response.json();
-        return { ok: true, reply: data.choices[0].message.content, model: model };
+        if (data.candidates && data.candidates[0] && data.candidates[0].content) {
+          return { ok: true, reply: data.candidates[0].content.parts[0].text, model: model };
+        }
       }
       
       // If model not found, try next
-      if (response.status === 400 || response.status === 404) {
+      if (response.status === 404 || response.status === 400) {
         continue;
       }
       
       const errText = await response.text();
-      return { ok: false, error: `Groq error: ${response.status}`, details: errText.substring(0, 200) };
+      return { ok: false, error: `Gemini error: ${response.status}`, details: errText.substring(0, 300) };
     } catch (e) {
       continue;
     }
@@ -125,13 +130,13 @@ async function callGroqAI(env, userMessage) {
 }
 
 async function enhancePicksWithAI(env, picks, match, conversation, platform, type) {
-  if (!env.GROQ_API_KEY || !conversation) return picks;
+  if (!env.GEMINI_API_KEY || !conversation) return picks;
   
   const prompt = `Match: ${match} on ${platform} (${type})
 Base picks: ${picks.map(p => `${p.pick} (${p.conf}%)`).join(', ')}
 User description: "${conversation}"
 
-Adjust the picks based on user description. Reply in EXACT format:
+Adjust the picks based on user description. Reply in EXACT format only, no other text:
 PICK1: [pick name]|[confidence]|[one line why]
 PICK2: [pick name]|[confidence]|[one line why]
 PICK3: [pick name]|[confidence]|[one line why]
@@ -140,14 +145,14 @@ PICK5: [pick name]|[confidence]|[one line why]
 
 Only adjust if user description strongly suggests it. Keep realistic (max 85%, min 40%).`;
 
-  const ai = await callGroqAI(env, prompt);
+  const ai = await callGeminiAI(env, prompt);
   if (!ai.ok) return picks;
   
-  const lines = ai.reply.split('\n').filter(l => l.startsWith('PICK'));
+  const lines = ai.reply.split('\n').filter(l => l.trim().startsWith('PICK'));
   const enhanced = [];
   
   for (let i = 0; i < picks.length; i++) {
-    const line = lines.find(l => l.startsWith('PICK' + (i+1) + ':'));
+    const line = lines.find(l => l.trim().startsWith('PICK' + (i+1) + ':'));
     if (line) {
       const parts = line.split('|').map(p => p.trim());
       if (parts.length >= 3) {
@@ -184,7 +189,7 @@ async function apiAnalyze(request, env) {
   const patterns = await loadPatterns(env);
   let recs = generatePicks(formA, formB, tableA, tableB, type, platform, conversation, patterns);
   
-  if (conversation && env.GROQ_API_KEY) {
+  if (conversation && env.GEMINI_API_KEY) {
     recs = await enhancePicksWithAI(env, recs, `${teamA} vs ${teamB}`, conversation, platform, type);
   }
   
@@ -215,7 +220,7 @@ async function apiAskAI(request, env) {
       headers: { "Content-Type": "application/json" } });
   }
   
-  const ai = await callGroqAI(env, question);
+  const ai = await callGeminiAI(env, question);
   
   if (!ai.ok) {
     return new Response(JSON.stringify({ ok: false, error: ai.error, details: ai.details || "" }), {
@@ -402,7 +407,7 @@ const pages = {
 </div>
 <div class="card glow">
   <h2 class="ct">WELCOME TO INSTANT PICKS</h2>
-  <p class="txt">Your intelligent betting co-pilot with <b class="hl">AI-powered analysis</b> and <b class="hl">self-learning patterns</b>.</p>
+  <p class="txt">Your intelligent betting co-pilot with <b class="hl">Google Gemini AI</b> + <b class="hl">self-learning patterns</b>.</p>
   <a href="/analyze" class="btn">START ANALYZING</a>
   <a href="/ask" class="btn" style="background:linear-gradient(135deg,#00cc6a,#009955);margin-top:10px">ASK THE AI</a>
 </div>
@@ -453,7 +458,7 @@ const pages = {
 <div id="result"></div>`,
 
   ask: `${nav("ask")}
-<div class="head"><div class="logo">⚡ ASK AI ⚡</div><div class="tag">BETTING ANALYSIS ASSISTANT</div></div>
+<div class="head"><div class="logo">⚡ ASK AI ⚡</div><div class="tag">GEMINI BETTING ANALYST</div></div>
 <div class="card glow">
   <h3 class="ct">🧠 INSTANT PICKS AI</h3>
   <p class="muted">Ask about picks, patterns, strategy. I'm locked to betting analysis — that's my only duty.</p>
@@ -533,7 +538,8 @@ const pages = {
   </div>
   <div class="card">
     <h3 class="ct">AI BRAIN</h3>
-    <div class="muted">Status: <b class="hl">CONNECTED</b> (Groq)</div>
+    <div class="muted">Provider: <b class="hl">Google Gemini</b></div>
+    <div class="muted">Status: <b class="hl">ACTIVE</b></div>
     <div class="muted">Mode: <b class="hl">BETTING ONLY</b></div>
   </div>
 </div>`
@@ -732,7 +738,7 @@ if(askBtn)askBtn.addEventListener('click',async()=>{
       box.style.display='block';
       box.scrollIntoView({behavior:'smooth'});
     }else{
-      alert('AI error: '+d.error+(d.details?'\\n\\nDetails: '+d.details.substring(0,150):''));
+      alert('AI error: '+d.error+(d.details?'\\n\\nDetails: '+d.details.substring(0,200):''));
     }
   }catch(e){alert('Error: '+e.message)}
   askBtn.disabled=false;askBtn.textContent='⚡ ASK AI ⚡';
