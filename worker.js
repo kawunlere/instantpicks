@@ -82,8 +82,8 @@ async function callGeminiAI(env, userMessage) {
     return { ok: false, error: "API key not configured in Cloudflare" };
   }
   
-  // Try multiple models in case one is unavailable
-  const models = ["gemini-1.5-flash", "gemini-1.5-flash-8b", "gemini-pro"];
+  // Use the actual model names that exist on your account
+  const models = ["gemini-2.5-flash", "gemini-flash-latest", "gemini-2.5-pro"];
   
   for (const model of models) {
     try {
@@ -115,12 +115,12 @@ async function callGeminiAI(env, userMessage) {
       }
       
       // If model not found, try next
-      if (response.status === 404 || response.status === 400) {
+      if (response.status === 404) {
         continue;
       }
       
       const errText = await response.text();
-      return { ok: false, error: `Gemini error: ${response.status}`, details: errText.substring(0, 300) };
+      return { ok: false, error: `Gemini ${response.status}`, details: errText.substring(0, 300) };
     } catch (e) {
       continue;
     }
@@ -407,7 +407,7 @@ const pages = {
 </div>
 <div class="card glow">
   <h2 class="ct">WELCOME TO INSTANT PICKS</h2>
-  <p class="txt">Your intelligent betting co-pilot with <b class="hl">Google Gemini AI</b> + <b class="hl">self-learning patterns</b>.</p>
+  <p class="txt">Your intelligent betting co-pilot with <b class="hl">Gemini 2.5 AI</b> + <b class="hl">self-learning patterns</b>.</p>
   <a href="/analyze" class="btn">START ANALYZING</a>
   <a href="/ask" class="btn" style="background:linear-gradient(135deg,#00cc6a,#009955);margin-top:10px">ASK THE AI</a>
 </div>
@@ -458,7 +458,7 @@ const pages = {
 <div id="result"></div>`,
 
   ask: `${nav("ask")}
-<div class="head"><div class="logo">⚡ ASK AI ⚡</div><div class="tag">GEMINI BETTING ANALYST</div></div>
+<div class="head"><div class="logo">⚡ ASK AI ⚡</div><div class="tag">GEMINI 2.5 BETTING ANALYST</div></div>
 <div class="card glow">
   <h3 class="ct">🧠 INSTANT PICKS AI</h3>
   <p class="muted">Ask about picks, patterns, strategy. I'm locked to betting analysis — that's my only duty.</p>
@@ -538,7 +538,7 @@ const pages = {
   </div>
   <div class="card">
     <h3 class="ct">AI BRAIN</h3>
-    <div class="muted">Provider: <b class="hl">Google Gemini</b></div>
+    <div class="muted">Provider: <b class="hl">Google Gemini 2.5</b></div>
     <div class="muted">Status: <b class="hl">ACTIVE</b></div>
     <div class="muted">Mode: <b class="hl">BETTING ONLY</b></div>
   </div>
@@ -665,10 +665,6 @@ async function loadStats(){
     const dw=document.getElementById('d-wins');if(dw)dw.textContent=s.wins;
     const dl=document.getElementById('d-losses');if(dl)dl.textContent=s.total-s.wins;
     const dr=document.getElementById('d-rate');if(dr)dr.textContent=rate+'%';
-    const pr=await fetch('/api/patterns');const p=await pr.json();
-    const rules=p.rules||{};
-    const active=Object.values(rules).filter(r=>r.total>=10).length;
-    const ap=document.getElementById('active-patterns');if(ap)ap.textContent=active;
   }catch(e){}}
 loadStats();
 async function loadPatterns(){
