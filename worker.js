@@ -16,13 +16,14 @@ export default {
       "/insights": "insights"
     };
     
+    // API routes MUST come BEFORE page route catch
     if (path === "/api/analyze" && request.method === "POST") return await apiAnalyze(request, env);
     if (path === "/api/result" && request.method === "POST") return await apiResult(request, env);
     if (path === "/api/stats") return await apiStats(env);
     if (path === "/api/predictions") return await apiPredictions(env);
     if (path === "/api/patterns") return await apiPatterns(env);
     if (path === "/api/insights") return await apiInsights(env);
-    if (path === "/api/ai/ask" && request.method === "POST") return await apiAskAI(request, env);
+    if (path === "/api/ask" && request.method === "POST") return await apiAskAI(request, env);
     if (path === "/api/admin/login" && request.method === "POST") return await adminLogin(request);
     
     const page = routes[path] || "404";
@@ -63,25 +64,25 @@ const PLATFORMS = {
   ]
 };
 
-const SYSTEM_PROMPT = `You are INSTANT PICKS AI, a strict betting analysis assistant.
+const SYSTEM_PROMPT = `You are the INSTANT PICKS CORE ENGINE, a strict betting analysis system.
 
-YOUR ONLY JOB: Help users make smarter, safer betting decisions by analyzing patterns, form, statistics, and user descriptions of matches.
+YOUR ONLY JOB: Help users make smarter, safer betting decisions.
 
 STRICT RULES:
 1. ONLY discuss betting analysis, picks, patterns, odds value, bankroll management, and discipline.
 2. NEVER drift to other topics. If asked, say "I only help with betting analysis."
 3. Always recommend value betting, discipline, and responsible gambling.
 4. Always remind users that no pick is 100% guaranteed.
-5. Keep responses under 200 words unless detailed analysis is needed.
-6. Speak like a professional betting analyst — confident but cautious.
-7. When user describes a game, analyze for: attacking/defensive style, momentum, likely outcomes.
-8. Consider: form, home/away, table position, recent results, and user observations.
+5. Keep responses under 200 words.
+6. Speak like a professional betting analyst.
+7. Analyze attacking/defensive style, momentum, likely outcomes.
+8. Consider form, home/away, table position, recent results, observations.
 
 You focus 100% on your duty: smarter betting.`;
 
-async function callGeminiAI(env, userMessage) {
+async function callCoreEngine(env, userMessage) {
   if (!env.GEMINI_API_KEY) {
-    return { ok: false, error: "API key not configured" };
+    return { ok: false, error: "Core engine not configured" };
   }
   
   const models = ["gemini-2.5-flash", "gemini-flash-latest", "gemini-2.5-pro"];
@@ -108,14 +109,14 @@ async function callGeminiAI(env, userMessage) {
       
       if (response.status === 404) continue;
       const errText = await response.text();
-      return { ok: false, error: `Gemini ${response.status}`, details: errText.substring(0, 300) };
+      return { ok: false, error: `Core error ${response.status}`, details: errText.substring(0, 300) };
     } catch (e) { continue; }
   }
   
-  return { ok: false, error: "All models failed" };
+  return { ok: false, error: "Core engine unavailable" };
 }
 
-async function enhancePicksWithAI(env, picks, match, conversation, platform, type) {
+async function enhancePicksWithEngine(env, picks, match, conversation, platform, type) {
   if (!env.GEMINI_API_KEY || !conversation) return picks;
   
   const prompt = `Match: ${match} on ${platform} (${type})
@@ -131,7 +132,7 @@ PICK5: [pick name]|[confidence]|[one line why]
 
 Max 85%, min 40%.`;
 
-  const ai = await callGeminiAI(env, prompt);
+  const ai = await callCoreEngine(env, prompt);
   if (!ai.ok) return picks;
   
   const lines = ai.reply.split('\n').filter(l => l.trim().startsWith('PICK'));
@@ -157,41 +158,71 @@ Max 85%, min 40%.`;
 }
 
 async function apiAnalyze(request, env) {
-  const form = await request.formData();
-  const platform = form.get("platform") || "sportybet";
-  const type = form.get("type") || "virtual";
-  const teamA = form.get("team_a") || "Team A";
-  const teamB = form.get("team_b") || "Team B";
-  const formA = (form.get("form_a") || "").toUpperCase().replace(/\s/g, "").split(",");
-  const formB = (form.get("form_b") || "").toUpperCase().replace(/\s/g, "").split(",");
-  const tableA = parseInt(form.get("table_a")) || 5;
-  const tableB = parseInt(form.get("table_b")) || 5;
-  const conversation = form.get("conversation") || "";
-  
-  const patterns = await loadPatterns(env);
-  const streaks = await getStreakInfo(env);
-  let recs = generatePicks(formA, formB, tableA, tableB, type, platform, conversation, patterns, streaks);
-  
-  if (conversation && env.GEMINI_API_KEY) {
-    recs = await enhancePicksWithAI(env, recs, `${teamA} vs ${teamB}`, conversation, platform, type);
+  try {
+    const form = await request.formData();
+    const platform = form.get("platform") || "sportybet";
+    const type = form.get("type") || "virtual";
+    const teamA = form.get("team_a") || "Team A";
+    const teamB = form.get("team_b") || "Team B";
+    const formA = (form.get("form_a") || "").toUpperCase().replace(/\s/g, "").split(",");
+    const formB = (form.get("form_b") || "").toUpperCase().replace(/\s/g, "").split(",");
+    const tableA = parseInt(form.get("table_a")) || 5;
+    const tableB = parseInt(form.get("table_b")) || 5;
+    const conversation = form.get("conversation") || "";
+    
+    const patterns = await loadPatterns(env);
+    const streaks = await getStreakInfo(env);
+    let recs = generatePicks(formA, formB, tableA, tableB, type, platform, conversation, patterns, streaks);
+    
+    if (conversation && env.GEMINI_API_KEY) {
+      recs = await enhancePicksWithEngine(env, recs, `${teamA} vs ${teamB}`, conversation, platform, type);
+    }
+    
+    const predId = `p_${Date.now()}`;
+    if (env.PICKS_KV) {
+      await env.PICKS_KV.put(predId, JSON.stringify({
+        id: predId,
+        time: new Date().toISOString(),
+        platform, type,
+        match: `${teamA} vs ${teamB}`,
+        formA, formB, tableA, tableB,
+        conversation,
+        picks: recs,
+        status: "pending"
+      }));
+    }
+    
+    return new Response(JSON.stringify({ ok: true, predId, teamA, teamB, platform, type, picks: recs, streaks }), {
+      headers: { "Content-Type": "application/json" } });
+  } catch (e) {
+    return new Response(JSON.stringify({ ok: false, error: e.message }), {
+      status: 500, headers: { "Content-Type": "application/json" } });
   }
-  
-  const predId = `p_${Date.now()}`;
-  if (env.PICKS_KV) {
-    await env.PICKS_KV.put(predId, JSON.stringify({
-      id: predId,
-      time: new Date().toISOString(),
-      platform, type,
-      match: `${teamA} vs ${teamB}`,
-      formA, formB, tableA, tableB,
-      conversation,
-      picks: recs,
-      status: "pending"
-    }));
+}
+
+async function apiAskAI(request, env) {
+  try {
+    const form = await request.formData();
+    const question = form.get("question") || "";
+    
+    if (!question.trim()) {
+      return new Response(JSON.stringify({ ok: false, error: "Empty question" }), {
+        headers: { "Content-Type": "application/json" } });
+    }
+    
+    const ai = await callCoreEngine(env, question);
+    
+    if (!ai.ok) {
+      return new Response(JSON.stringify({ ok: false, error: ai.error, details: ai.details || "" }), {
+        headers: { "Content-Type": "application/json" } });
+    }
+    
+    return new Response(JSON.stringify({ ok: true, reply: ai.reply, model: ai.model }), {
+      headers: { "Content-Type": "application/json" } });
+  } catch (e) {
+    return new Response(JSON.stringify({ ok: false, error: e.message }), {
+      status: 500, headers: { "Content-Type": "application/json" } });
   }
-  
-  return new Response(JSON.stringify({ ok: true, predId, teamA, teamB, platform, type, picks: recs, streaks }), {
-    headers: { "Content-Type": "application/json" } });
 }
 
 async function apiResult(request, env) {
@@ -255,11 +286,11 @@ async function getStreakInfo(env) {
   
   let message = "";
   if (type === "lose" && current >= 3) {
-    message = `⚠️ ${current} losses in a row. Take a break or reduce stakes.`;
+    message = `${current} losses in a row. Take a break or reduce stakes.`;
   } else if (type === "win" && current >= 3) {
-    message = `🔥 ${current} wins hot streak! Stay disciplined.`;
+    message = `${current} wins hot streak! Stay disciplined.`;
   } else if (type === "lose" && current === 2) {
-    message = `⚠️ 2 losses. Be cautious.`;
+    message = `2 losses. Be cautious.`;
   }
   
   return { current, type, message };
@@ -281,20 +312,20 @@ async function learnFromResult(env, pred, pick, outcome) {
   const timeSlot = hour < 12 ? "morning" : hour < 18 ? "afternoon" : "evening";
   
   const formKey = `${pred.platform}_${pred.type}_form${formDiff}_pos${tableDiff > 0 ? "good" : "bad"}`;
-  if (!patterns.rules[formKey]) patterns.rules[formKey] = { hits: 0, total: 0, confidence: 50, samples: [] };
+  if (!patterns.rules[formKey]) patterns.rules[formKey] = { hits: 0, total: 0, confidence: 50 };
   patterns.rules[formKey].total++;
   if (outcome === "win") patterns.rules[formKey].hits++;
   patterns.rules[formKey].confidence = Math.round((patterns.rules[formKey].hits / patterns.rules[formKey].total) * 100);
   
   const timeKey = `${pred.platform}_time_${timeSlot}`;
-  if (!patterns.rules[timeKey]) patterns.rules[timeKey] = { hits: 0, total: 0, confidence: 50, samples: [] };
+  if (!patterns.rules[timeKey]) patterns.rules[timeKey] = { hits: 0, total: 0, confidence: 50 };
   patterns.rules[timeKey].total++;
   if (outcome === "win") patterns.rules[timeKey].hits++;
   patterns.rules[timeKey].confidence = Math.round((patterns.rules[timeKey].hits / patterns.rules[timeKey].total) * 100);
   
   if (pred.conversation) {
     const convKey = `${pred.platform}_conv_${getConvCategory(pred.conversation.toLowerCase())}`;
-    if (!patterns.rules[convKey]) patterns.rules[convKey] = { hits: 0, total: 0, confidence: 50, samples: [] };
+    if (!patterns.rules[convKey]) patterns.rules[convKey] = { hits: 0, total: 0, confidence: 50 };
     patterns.rules[convKey].total++;
     if (outcome === "win") patterns.rules[convKey].hits++;
     patterns.rules[convKey].confidence = Math.round((patterns.rules[convKey].hits / patterns.rules[convKey].total) * 100);
@@ -429,18 +460,20 @@ const ICONS = {
   analyze: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="M21 21L16.65 16.65M11 8V14M8 11H14"/></svg>',
   dashboard: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/></svg>',
   history: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3V21H21M7 16L12 11L15 14L21 8"/></svg>',
-  patterns: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 1V3M12 21V23M4.22 4.22L5.64 5.64M18.36 18.36L19.78 19.78M1 12H3M21 12H23M4.22 19.78L5.64 18.36M18.36 5.64L19.78 4.22"/></svg>',
+  patterns: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12C3 12 5 6 9 6C13 6 15 12 15 12M9 12C9 12 11 6 15 6C19 6 21 12 21 12M9 12C9 12 11 18 15 18C19 18 21 12 21 12M9 12C9 12 11 18 15 18M3 12C3 12 5 18 9 18"/></svg>',
   learn: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 3H8C9 3 10 4 10 5V21C10 20 9 19 8 19H2V3M22 3H16C15 3 14 4 14 5V21C14 20 15 19 16 19H22V3M7 7H5M7 11H5M7 15H5M19 7H17M19 11H17M19 15H17"/></svg>',
   lock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7C7 4.24 9.24 2 12 2C14.76 2 17 4.24 17 7V11"/></svg>',
-  ask: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 11.5C21 16.75 16.75 21 11.5 21C9.83 21 8.27 20.55 6.93 19.78L3 21L4.22 17.07C3.45 15.73 3 14.17 3 12.5C3 7.25 7.25 3 12.5 3C16.75 3 20.25 6.25 20.25 10.5"/></svg>',
-  insights: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7L12 12L22 7L12 2Z"/><path d="M2 17L12 22L22 17M2 12L12 17L22 12"/></svg>'
+  ask: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12C21 16.97 16.97 21 12 21C10.18 21 8.5 20.41 7.13 19.4L3 21L4.6 16.87C3.59 15.5 3 13.82 3 12C3 7.03 7.03 3 12 3C16.97 3 21 7.03 21 12Z"/><circle cx="8.5" cy="12" r="1" fill="currentColor"/><circle cx="12" cy="12" r="1" fill="currentColor"/><circle cx="15.5" cy="12" r="1" fill="currentColor"/></svg>',
+  insights: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7L12 12L22 7L12 2Z"/><path d="M2 17L12 22L22 17M2 12L12 17L22 12"/></svg>',
+  core: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 1V3M12 21V23M4.22 4.22L5.64 5.64M18.36 18.36L19.78 19.78M1 12H3M21 12H23M4.22 19.78L5.64 18.36M18.36 5.64L19.78 4.22"/></svg>',
+  check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg>'
 };
 
 function nav(active) {
   const items = [
     ["home", "HOME", ICONS.home],
     ["analyze", "ANALYZE", ICONS.analyze],
-    ["ask", "AI", ICONS.ask],
+    ["ask", "CORE", ICONS.ask],
     ["dashboard", "STATS", ICONS.dashboard],
     ["insights", "TIPS", ICONS.insights],
     ["patterns", "PATTERNS", ICONS.patterns]
@@ -461,16 +494,16 @@ const pages = {
 <div class="streak-msg" id="streak-msg" style="display:none"></div>
 <div class="card glow">
   <h2 class="ct">WELCOME TO INSTANT PICKS</h2>
-  <p class="txt">Your intelligent betting co-pilot with <b class="hl">Gemini AI</b>, <b class="hl">streak intelligence</b>, and <b class="hl">self-learning patterns</b>.</p>
+  <p class="txt">Your intelligent betting co-pilot with proprietary <b class="hl">pattern engine</b> and <b class="hl">streak intelligence</b>.</p>
   <a href="/analyze" class="btn">START ANALYZING</a>
   <a href="/insights" class="btn" style="background:linear-gradient(135deg,#ffaa00,#ff8800);margin-top:10px">VIEW INSIGHTS</a>
 </div>
 <div class="card">
-  <h3 class="ct">🧠 POWERED BY</h3>
-  <div class="muted">✓ Gemini 2.5 Flash AI</div>
-  <div class="muted">✓ 14 Betting Platforms</div>
-  <div class="muted">✓ Pattern Engine + Streak Detection</div>
-  <div class="muted">✓ Real-time Insights</div>
+  <h3 class="ct">PROPRIETARY TECHNOLOGY</h3>
+  <div class="muted"><span class="check-icon">${ICONS.check}</span> Pattern Recognition Engine</div>
+  <div class="muted"><span class="check-icon">${ICONS.check}</span> Streak Detection System</div>
+  <div class="muted"><span class="check-icon">${ICONS.check}</span> 14 Platform Support</div>
+  <div class="muted"><span class="check-icon">${ICONS.check}</span> Real-time Personal Insights</div>
 </div>
 <div class="card warn">
   <b class="warn-text">⚠ DISCIPLINE FIRST</b>
@@ -512,7 +545,7 @@ const pages = {
       <div><label>TEAM A POS</label><input name="table_a" type="number" placeholder="3" required></div>
       <div><label>TEAM B POS</label><input name="table_b" type="number" placeholder="7" required></div>
     </div>
-    <label class="optional-label">DESCRIBE THE GAME (AI READS)</label>
+    <label class="optional-label">DESCRIBE THE GAME (HELPS THE ENGINE)</label>
     <textarea name="conversation" id="conv" rows="3" placeholder="e.g. Team A pressing high, Team B defensive..."></textarea>
     <button type="submit" class="btn">⚡ ANALYZE ⚡</button>
   </form>
@@ -520,18 +553,18 @@ const pages = {
 <div id="result"></div>`,
 
   ask: `${nav("ask")}
-<div class="head"><div class="logo">⚡ ASK AI ⚡</div><div class="tag">GEMINI BETTING ANALYST</div></div>
+<div class="head"><div class="logo">⚡ CORE ENGINE ⚡</div><div class="tag">PROPRIETARY ANALYSIS SYSTEM</div></div>
 <div class="card glow">
-  <h3 class="ct">🧠 INSTANT PICKS AI</h3>
-  <p class="muted">Ask about picks, patterns, strategy. Locked to betting analysis.</p>
+  <h3 class="ct">INSTANT PICKS CORE</h3>
+  <p class="muted">Ask about picks, patterns, strategy. Locked to betting analysis only.</p>
 </div>
 <div class="card">
   <label>YOUR QUESTION</label>
   <textarea id="aiQuestion" rows="4" placeholder="e.g. How should I manage my bankroll?"></textarea>
-  <button class="btn" id="askBtn">⚡ ASK AI ⚡</button>
+  <button class="btn" id="askBtn">⚡ ASK CORE ⚡</button>
 </div>
 <div id="aiResponse" class="card" style="display:none">
-  <h3 class="ct">AI RESPONSE</h3>
+  <h3 class="ct">CORE RESPONSE</h3>
   <div id="aiModel" class="muted" style="font-size:10px;margin-bottom:10px"></div>
   <div id="aiText" class="txt"></div>
 </div>`,
@@ -556,13 +589,13 @@ const pages = {
 
   patterns: `${nav("patterns")}
 <div class="head"><div class="logo">⚡ PATTERNS ⚡</div></div>
-<div class="card glow"><h3 class="ct">🧠 THE BRAIN IS LEARNING</h3><p class="muted">Patterns with <b class="hl">10+ samples</b> appear below.</p></div>
-<div class="card"><h3 class="ct">DETECTED PATTERNS</h3><div id="patterns-list" class="muted">Log 10+ results to see insights</div></div>`,
+<div class="card glow"><h3 class="ct">PATTERN ENGINE</h3><p class="muted">Patterns with <b class="hl">10+ samples</b> appear below.</p></div>
+<div class="card"><h3 class="ct">DETECTED PATTERNS</h3><div id="patterns-list" class="muted">Log 10+ results to see patterns</div></div>`,
 
   insights: `${nav("insights")}
 <div class="head"><div class="logo">⚡ INSIGHTS ⚡</div><div class="tag">SMART TIPS FOR YOU</div></div>
 <div class="card glow">
-  <h3 class="ct">💡 PERSONAL INSIGHTS</h3>
+  <h3 class="ct">PERSONAL INSIGHTS</h3>
   <p class="muted">Real-time advice based on your data, streaks, and patterns.</p>
 </div>
 <div id="insights-list">
@@ -593,10 +626,9 @@ const pages = {
 <div id="panel" style="display:none">
   <div class="card"><h3 class="ct">STATS</h3><div id="a-stats" class="muted">Loading...</div></div>
   <div class="card">
-    <h3 class="ct">AI BRAIN</h3>
-    <div class="muted">Provider: <b class="hl">Google Gemini 2.5</b></div>
+    <h3 class="ct">CORE ENGINE</h3>
     <div class="muted">Status: <b class="hl">ACTIVE</b></div>
-    <div class="muted">Engines: <b class="hl">Pattern + Streak + Insights</b></div>
+    <div class="muted">Modules: <b class="hl">Pattern + Streak + Insights</b></div>
   </div>
 </div>`
 };
@@ -630,14 +662,14 @@ canvas#matrix{position:fixed;top:0;left:0;width:100%;height:100%;z-index:0;opaci
 .card:hover{border-color:rgba(0,255,136,.3)}
 .card.glow{box-shadow:0 0 30px rgba(0,255,136,.1);border-color:rgba(0,255,136,.4)}
 .card.warn{border-color:rgba(255,51,51,.3);background:linear-gradient(135deg,rgba(255,51,51,.05),var(--card))}
-.card.tip-good{border-color:rgba(0,255,136,.4);background:linear-gradient(135deg,rgba(0,255,136,.08),var(--card))}
-.card.tip-warn{border-color:rgba(255,170,0,.4);background:linear-gradient(135deg,rgba(255,170,0,.08),var(--card))}
-.streak-msg{background:linear-gradient(135deg,rgba(255,170,0,.1),var(--card));border:1px solid var(--yellow);border-radius:10px;padding:12px;margin:10px 0;text-align:center;font-weight:700;color:var(--yellow)}
+.streak-msg{background:linear-gradient(135deg,rgba(255,170,0,.1),var(--card));border:1px solid var(--yellow);border-radius:10px;padding:12px;margin:10px 0;text-align:center;font-weight:700;color:var(--yellow);font-size:13px}
 .ct{color:var(--green);margin-bottom:10px;font-size:14px;letter-spacing:1px}
 .txt{color:#ccc;line-height:1.6;font-size:13px;white-space:pre-wrap}
 .hl{color:var(--green);text-shadow:0 0 5px var(--green);text-decoration:none}
 .warn-text{color:var(--red);text-shadow:0 0 5px var(--red)}
-.muted{color:var(--gray);font-size:12px;line-height:1.6;margin:4px 0}
+.muted{color:var(--gray);font-size:12px;line-height:1.6;margin:4px 0;display:flex;align-items:center;gap:6px}
+.check-icon{width:14px;height:14px;display:inline-block;flex-shrink:0}
+.check-icon svg{width:100%;height:100%;stroke:var(--green);filter:drop-shadow(0 0 3px var(--green))}
 label{display:block;color:var(--green);font-size:10px;font-weight:700;margin:12px 0 5px;letter-spacing:2px}
 .optional-label{color:var(--yellow);font-size:9px}
 input,select,textarea{width:100%;padding:12px;background:rgba(0,0,0,.5);color:#fff;border:1px solid #333;border-radius:8px;font-size:14px;font-family:inherit;transition:.3s}
@@ -738,8 +770,8 @@ async function loadStats(){
       let cur=0,type=recent[0]?recent[0].status:'none';
       for(const x of recent){if(x.status===type)cur++;else break;}
       const hs=document.getElementById('h-streak');if(hs)hs.textContent=cur+(type==='win'?'W':type==='lose'?'L':'');
-      if(type==='lose'&&cur>=3)showStreak('⚠️ '+cur+' losses in a row — take a break');
-      else if(type==='win'&&cur>=3)showStreak('🔥 '+cur+' wins hot streak — stay disciplined');
+      if(type==='lose'&&cur>=3)showStreak(cur+' losses in a row — take a break');
+      else if(type==='win'&&cur>=3)showStreak(cur+' wins hot streak — stay disciplined');
     }
   }catch(e){}}
 loadStats();
@@ -761,7 +793,7 @@ async function loadHistory(){
   try{const r=await fetch('/api/predictions');const p=await r.json();
   const h=document.getElementById('hist');if(!h)return;
   if(!p.length){h.innerHTML='No predictions yet.';return}
-  h.innerHTML=p.map(x=>'<div style="padding:10px;border-bottom:1px solid #222"><div style="display:flex;justify-content:space-between"><b class="hl">'+x.match+'</b><span style="color:var(--gray);font-size:9px">'+x.platform.toUpperCase()+'</span></div><div style="color:var(--gray);font-size:10px;margin-top:2px">'+new Date(x.time).toLocaleString()+'</div><div style="font-size:10px;margin-top:3px">'+(x.status==='win'?'<b class="hl">✓ WIN</b>':x.status==='lose'?'<b class="warn-text">✗ LOSE</b>':'<span class="muted">PENDING</span>')+'</div></div>').join('');
+  h.innerHTML=p.map(x=>'<div style="padding:10px;border-bottom:1px solid #222"><div style="display:flex;justify-content:space-between"><b class="hl">'+x.match+'</b><span style="color:var(--gray);font-size:9px">'+x.platform.toUpperCase()+'</span></div><div style="color:var(--gray);font-size:10px;margin-top:2px">'+new Date(x.time).toLocaleString()+'</div><div style="font-size:10px;margin-top:3px">'+(x.status==='win'?'<b class="hl">WIN</b>':x.status==='lose'?'<b class="warn-text">LOSE</b>':'<span class="muted">PENDING</span>')+'</div></div>').join('');
   }catch(e){}}
 loadHistory();
 async function loadInsights(){
@@ -770,13 +802,12 @@ async function loadInsights(){
     const list=document.getElementById('insights-list');
     if(!list)return;
     if(!d.insights.length){
-      list.innerHTML='<div class="card muted">No insights yet — make some analyses and log results to get personalized tips.</div>';
+      list.innerHTML='<div class="card muted">No insights yet — make some analyses to get personalized tips.</div>';
       return;
     }
     list.innerHTML=d.insights.map(i=>{
       const cls=i.type==='good'?'insight-good':i.type==='warn'?'insight-warn':'insight-info';
-      const icon=i.type==='good'?'✓':i.type==='warn'?'⚠':'ℹ';
-      return '<div class="insight-item '+cls+'">'+icon+' '+i.text+'</div>';
+      return '<div class="insight-item '+cls+'">'+i.text+'</div>';
     }).join('');
   }catch(e){}}
 loadInsights();
@@ -816,19 +847,19 @@ if(askBtn)askBtn.addEventListener('click',async()=>{
   askBtn.disabled=true;askBtn.textContent='THINKING...';
   const fd=new FormData();fd.append('question',q);
   try{
-    const r=await fetch('/api/ai/ask',{method:'POST',body:fd});
+    const r=await fetch('/api/ask',{method:'POST',body:fd});
     const d=await r.json();
     const box=document.getElementById('aiResponse');
     const txt=document.getElementById('aiText');
     const mod=document.getElementById('aiModel');
     if(d.ok){
       txt.textContent=d.reply;
-      mod.textContent='Model: '+(d.model||'AI');
+      mod.textContent='Core Engine v1.0';
       box.style.display='block';
       box.scrollIntoView({behavior:'smooth'});
-    }else alert('AI error: '+d.error);
+    }else alert('Error: '+d.error);
   }catch(e){alert('Error: '+e.message)}
-  askBtn.disabled=false;askBtn.textContent='⚡ ASK AI ⚡';
+  askBtn.disabled=false;askBtn.textContent='⚡ ASK CORE ⚡';
 });
 async function adminLogin(){
   const p=document.getElementById('pass').value;
