@@ -12,7 +12,8 @@ export default {
       "/learn": "learn",
       "/about": "about",
       "/admin": "admin",
-      "/ask": "ask"
+      "/ask": "ask",
+      "/insights": "insights"
     };
     
     if (path === "/api/analyze" && request.method === "POST") return await apiAnalyze(request, env);
@@ -20,6 +21,7 @@ export default {
     if (path === "/api/stats") return await apiStats(env);
     if (path === "/api/predictions") return await apiPredictions(env);
     if (path === "/api/patterns") return await apiPatterns(env);
+    if (path === "/api/insights") return await apiInsights(env);
     if (path === "/api/ai/ask" && request.method === "POST") return await apiAskAI(request, env);
     if (path === "/api/admin/login" && request.method === "POST") return await adminLogin(request);
     
@@ -79,10 +81,9 @@ You focus 100% on your duty: smarter betting.`;
 
 async function callGeminiAI(env, userMessage) {
   if (!env.GEMINI_API_KEY) {
-    return { ok: false, error: "API key not configured in Cloudflare" };
+    return { ok: false, error: "API key not configured" };
   }
   
-  // Use the actual model names that exist on your account
   const models = ["gemini-2.5-flash", "gemini-flash-latest", "gemini-2.5-pro"];
   
   for (const model of models) {
@@ -91,19 +92,10 @@ async function callGeminiAI(env, userMessage) {
       
       const response = await fetch(url, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          contents: [{
-            parts: [{
-              text: SYSTEM_PROMPT + "\n\nUser: " + userMessage
-            }]
-          }],
-          generationConfig: {
-            maxOutputTokens: 400,
-            temperature: 0.7
-          }
+          contents: [{ parts: [{ text: SYSTEM_PROMPT + "\n\nUser: " + userMessage }] }],
+          generationConfig: { maxOutputTokens: 400, temperature: 0.7 }
         })
       });
       
@@ -114,19 +106,13 @@ async function callGeminiAI(env, userMessage) {
         }
       }
       
-      // If model not found, try next
-      if (response.status === 404) {
-        continue;
-      }
-      
+      if (response.status === 404) continue;
       const errText = await response.text();
       return { ok: false, error: `Gemini ${response.status}`, details: errText.substring(0, 300) };
-    } catch (e) {
-      continue;
-    }
+    } catch (e) { continue; }
   }
   
-  return { ok: false, error: "All models failed. Check API key." };
+  return { ok: false, error: "All models failed" };
 }
 
 async function enhancePicksWithAI(env, picks, match, conversation, platform, type) {
@@ -136,14 +122,14 @@ async function enhancePicksWithAI(env, picks, match, conversation, platform, typ
 Base picks: ${picks.map(p => `${p.pick} (${p.conf}%)`).join(', ')}
 User description: "${conversation}"
 
-Adjust the picks based on user description. Reply in EXACT format only, no other text:
+Adjust based on description. EXACT format only:
 PICK1: [pick name]|[confidence]|[one line why]
 PICK2: [pick name]|[confidence]|[one line why]
 PICK3: [pick name]|[confidence]|[one line why]
 PICK4: [pick name]|[confidence]|[one line why]
 PICK5: [pick name]|[confidence]|[one line why]
 
-Only adjust if user description strongly suggests it. Keep realistic (max 85%, min 40%).`;
+Max 85%, min 40%.`;
 
   const ai = await callGeminiAI(env, prompt);
   if (!ai.ok) return picks;
@@ -163,12 +149,8 @@ Only adjust if user description strongly suggests it. Keep realistic (max 85%, m
           conf: Math.max(40, Math.min(85, conf)),
           why: parts[2]
         });
-      } else {
-        enhanced.push(picks[i]);
-      }
-    } else {
-      enhanced.push(picks[i]);
-    }
+      } else { enhanced.push(picks[i]); }
+    } else { enhanced.push(picks[i]); }
   }
   
   return enhanced;
@@ -187,7 +169,8 @@ async function apiAnalyze(request, env) {
   const conversation = form.get("conversation") || "";
   
   const patterns = await loadPatterns(env);
-  let recs = generatePicks(formA, formB, tableA, tableB, type, platform, conversation, patterns);
+  const streaks = await getStreakInfo(env);
+  let recs = generatePicks(formA, formB, tableA, tableB, type, platform, conversation, patterns, streaks);
   
   if (conversation && env.GEMINI_API_KEY) {
     recs = await enhancePicksWithAI(env, recs, `${teamA} vs ${teamB}`, conversation, platform, type);
@@ -207,27 +190,7 @@ async function apiAnalyze(request, env) {
     }));
   }
   
-  return new Response(JSON.stringify({ ok: true, predId, teamA, teamB, platform, type, picks: recs }), {
-    headers: { "Content-Type": "application/json" } });
-}
-
-async function apiAskAI(request, env) {
-  const form = await request.formData();
-  const question = form.get("question") || "";
-  
-  if (!question.trim()) {
-    return new Response(JSON.stringify({ ok: false, error: "Empty question" }), {
-      headers: { "Content-Type": "application/json" } });
-  }
-  
-  const ai = await callGeminiAI(env, question);
-  
-  if (!ai.ok) {
-    return new Response(JSON.stringify({ ok: false, error: ai.error, details: ai.details || "" }), {
-      headers: { "Content-Type": "application/json" } });
-  }
-  
-  return new Response(JSON.stringify({ ok: true, reply: ai.reply, model: ai.model }), {
+  return new Response(JSON.stringify({ ok: true, predId, teamA, teamB, platform, type, picks: recs, streaks }), {
     headers: { "Content-Type": "application/json" } });
 }
 
@@ -237,12 +200,18 @@ async function apiResult(request, env) {
   const pick = form.get("pick");
   const outcome = form.get("outcome");
   
-  let s = { total: 0, wins: 0 };
+  let s = { total: 0, wins: 0, todayTotal: 0, todayWins: 0, todayDate: new Date().toDateString() };
   if (env.PICKS_KV) {
     const stored = await env.PICKS_KV.get("stats");
-    if (stored) s = JSON.parse(stored);
+    if (stored) {
+      s = JSON.parse(stored);
+      if (s.todayDate !== new Date().toDateString()) {
+        s.todayTotal = 0; s.todayWins = 0; s.todayDate = new Date().toDateString();
+      }
+    }
     s.total++;
-    if (outcome === "win") s.wins++;
+    s.todayTotal++;
+    if (outcome === "win") { s.wins++; s.todayWins++; }
     await env.PICKS_KV.put("stats", JSON.stringify(s));
     
     if (predId) {
@@ -261,6 +230,41 @@ async function apiResult(request, env) {
   return new Response(JSON.stringify({ ok: true, stats: s }), { headers: { "Content-Type": "application/json" } });
 }
 
+async function getStreakInfo(env) {
+  if (!env.PICKS_KV) return { current: 0, type: "none", message: "" };
+  
+  const list = await env.PICKS_KV.list({ prefix: "p_" });
+  const recent = [];
+  
+  for (const key of list.keys.slice(-10).reverse()) {
+    const v = await env.PICKS_KV.get(key.name);
+    if (v) {
+      const p = JSON.parse(v);
+      if (p.status === "win" || p.status === "lose") recent.push(p.status);
+    }
+  }
+  
+  if (!recent.length) return { current: 0, type: "none", message: "" };
+  
+  let current = 0;
+  let type = recent[0];
+  for (const r of recent) {
+    if (r === type) current++;
+    else break;
+  }
+  
+  let message = "";
+  if (type === "lose" && current >= 3) {
+    message = `⚠️ ${current} losses in a row. Take a break or reduce stakes.`;
+  } else if (type === "win" && current >= 3) {
+    message = `🔥 ${current} wins hot streak! Stay disciplined.`;
+  } else if (type === "lose" && current === 2) {
+    message = `⚠️ 2 losses. Be cautious.`;
+  }
+  
+  return { current, type, message };
+}
+
 async function learnFromResult(env, pred, pick, outcome) {
   if (!env.PICKS_KV) return;
   
@@ -273,14 +277,20 @@ async function learnFromResult(env, pred, pick, outcome) {
   const winsB = formB.filter(r => r === "W").length;
   const formDiff = winsA - winsB;
   const tableDiff = (pred.tableB || 5) - (pred.tableA || 5);
+  const hour = new Date(pred.time).getHours();
+  const timeSlot = hour < 12 ? "morning" : hour < 18 ? "afternoon" : "evening";
   
-  const key = `${pred.platform}_${pred.type}_form${formDiff}_pos${tableDiff > 0 ? "good" : "bad"}`;
-  if (!patterns.rules[key]) patterns.rules[key] = { hits: 0, total: 0, confidence: 50, samples: [] };
-  patterns.rules[key].total++;
-  if (outcome === "win") patterns.rules[key].hits++;
-  patterns.rules[key].confidence = Math.round((patterns.rules[key].hits / patterns.rules[key].total) * 100);
-  patterns.rules[key].samples.push({ match: pred.match, pick, outcome, time: pred.time });
-  if (patterns.rules[key].samples.length > 20) patterns.rules[key].samples.shift();
+  const formKey = `${pred.platform}_${pred.type}_form${formDiff}_pos${tableDiff > 0 ? "good" : "bad"}`;
+  if (!patterns.rules[formKey]) patterns.rules[formKey] = { hits: 0, total: 0, confidence: 50, samples: [] };
+  patterns.rules[formKey].total++;
+  if (outcome === "win") patterns.rules[formKey].hits++;
+  patterns.rules[formKey].confidence = Math.round((patterns.rules[formKey].hits / patterns.rules[formKey].total) * 100);
+  
+  const timeKey = `${pred.platform}_time_${timeSlot}`;
+  if (!patterns.rules[timeKey]) patterns.rules[timeKey] = { hits: 0, total: 0, confidence: 50, samples: [] };
+  patterns.rules[timeKey].total++;
+  if (outcome === "win") patterns.rules[timeKey].hits++;
+  patterns.rules[timeKey].confidence = Math.round((patterns.rules[timeKey].hits / patterns.rules[timeKey].total) * 100);
   
   if (pred.conversation) {
     const convKey = `${pred.platform}_conv_${getConvCategory(pred.conversation.toLowerCase())}`;
@@ -314,6 +324,41 @@ async function apiPatterns(env) {
   return new Response(raw, { headers: { "Content-Type": "application/json" } });
 }
 
+async function apiInsights(env) {
+  if (!env.PICKS_KV) return new Response(JSON.stringify({ insights: [] }), { headers: { "Content-Type": "application/json" } });
+  
+  const statsRaw = await env.PICKS_KV.get("stats") || '{"total":0,"wins":0}';
+  const stats = JSON.parse(statsRaw);
+  const patternsRaw = await env.PICKS_KV.get("patterns") || '{"rules":{}}';
+  const patterns = JSON.parse(patternsRaw);
+  
+  const insights = [];
+  
+  if (stats.total > 0) {
+    const rate = Math.round((stats.wins / stats.total) * 100);
+    if (rate >= 60) insights.push({ type: "good", text: `Win rate ${rate}% — strong performance. Stay disciplined.` });
+    else if (rate < 45 && stats.total >= 10) insights.push({ type: "warn", text: `Win rate ${rate}% — review your analysis approach.` });
+  }
+  
+  const rules = patterns.rules || {};
+  Object.entries(rules).forEach(([key, r]) => {
+    if (r.total >= 10 && r.confidence >= 70) {
+      insights.push({ type: "good", text: `Strong pattern: ${key.replace(/_/g, ' ')} hits ${r.confidence}%` });
+    } else if (r.total >= 10 && r.confidence < 40) {
+      insights.push({ type: "warn", text: `Weak pattern: ${key.replace(/_/g, ' ')} only ${r.confidence}%` });
+    }
+  });
+  
+  if (stats.todayTotal > 0) {
+    const todayRate = Math.round((stats.todayWins / stats.todayTotal) * 100);
+    if (stats.todayTotal >= 5 && todayRate < 40) {
+      insights.push({ type: "warn", text: `Today is rough (${todayRate}%). Consider stopping and analyzing patterns.` });
+    }
+  }
+  
+  return new Response(JSON.stringify({ insights }), { headers: { "Content-Type": "application/json" } });
+}
+
 async function apiStats(env) {
   if (!env.PICKS_KV) return new Response('{"total":0,"wins":0}', { headers: { "Content-Type": "application/json" } });
   const s = await env.PICKS_KV.get("stats") || '{"total":0,"wins":0}';
@@ -339,31 +384,37 @@ async function adminLogin(request) {
   return new Response(JSON.stringify({ ok: false }), { status: 401, headers: { "Content-Type": "application/json" } });
 }
 
-function generatePicks(fA, fB, tA, tB, type, platform, conversation, patterns) {
+function generatePicks(fA, fB, tA, tB, type, platform, conversation, patterns, streaks) {
   const sA = fA.reduce((s, r) => s + (r === "W" ? 3 : r === "D" ? 1 : 0), 0);
   const sB = fB.reduce((s, r) => s + (r === "W" ? 3 : r === "D" ? 1 : 0), 0);
   const diff = sA - sB;
   const gap = tA - tB;
   
   let baseBoost = 0;
+  let confPenalty = 0;
+  
   if (patterns && patterns.rules) {
     const key = `${platform}_${type}_form${diff}_pos${gap > 0 ? "good" : "bad"}`;
     const rule = patterns.rules[key];
     if (rule && rule.total >= 3) baseBoost = Math.round((rule.confidence - 50) / 5);
   }
   
+  if (streaks && streaks.type === "lose" && streaks.current >= 3) {
+    confPenalty = -5;
+  }
+  
   const recs = [];
   
   if (type === "virtual") {
-    if (diff > 3) recs.push({ pick: "Home Win (1)", conf: Math.max(40, Math.min(85, 68 + baseBoost)), risk: "medium", why: "Team A dominant form" + (baseBoost ? " + pattern" : "") });
-    else if (diff < -3) recs.push({ pick: "Away Win (2)", conf: Math.max(40, Math.min(85, 64 + baseBoost)), risk: "medium", why: "Team B stronger" });
-    else recs.push({ pick: "Over 1.5 Goals", conf: Math.max(40, Math.min(85, 72 + baseBoost)), risk: "low", why: "Virtuals score often" });
-    recs.push({ pick: "BTTS: Yes", conf: 58, risk: "medium", why: "Both teams attacking" });
-    recs.push({ pick: "Double Chance (1X)", conf: 75, risk: "low", why: "Safe home play" });
+    if (diff > 3) recs.push({ pick: "Home Win (1)", conf: Math.max(40, Math.min(85, 68 + baseBoost + confPenalty)), risk: "medium", why: "Team A dominant form" + (baseBoost ? " + pattern" : "") });
+    else if (diff < -3) recs.push({ pick: "Away Win (2)", conf: Math.max(40, Math.min(85, 64 + baseBoost + confPenalty)), risk: "medium", why: "Team B stronger" });
+    else recs.push({ pick: "Over 1.5 Goals", conf: Math.max(40, Math.min(85, 72 + baseBoost + confPenalty)), risk: "low", why: "Virtuals score often" });
+    recs.push({ pick: "BTTS: Yes", conf: 58 + confPenalty, risk: "medium", why: "Both teams attacking" });
+    recs.push({ pick: "Double Chance (1X)", conf: 75, risk: "low", why: "Safest play" });
     recs.push({ pick: "Over 2.5 Goals", conf: 52, risk: "high", why: "High-scoring virtual" });
   } else {
-    if (diff > 3 && gap < 0) recs.push({ pick: "Home Win (1)", conf: 66 + baseBoost, risk: "medium", why: "Form + position favor home" });
-    else if (diff < -3) recs.push({ pick: "Away Win (2)", conf: 62 + baseBoost, risk: "medium", why: "Away team superior" });
+    if (diff > 3 && gap < 0) recs.push({ pick: "Home Win (1)", conf: 66 + baseBoost + confPenalty, risk: "medium", why: "Form + position favor home" });
+    else if (diff < -3) recs.push({ pick: "Away Win (2)", conf: 62 + baseBoost + confPenalty, risk: "medium", why: "Away team superior" });
     else recs.push({ pick: "Double Chance (1X or X2)", conf: 75, risk: "low", why: "Balanced match" });
     recs.push({ pick: "Under 3.5 Goals", conf: 70, risk: "low", why: "Tight match expected" });
     recs.push({ pick: "BTTS: No", conf: 60, risk: "medium", why: "Defensive setup likely" });
@@ -381,15 +432,17 @@ const ICONS = {
   patterns: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 1V3M12 21V23M4.22 4.22L5.64 5.64M18.36 18.36L19.78 19.78M1 12H3M21 12H23M4.22 19.78L5.64 18.36M18.36 5.64L19.78 4.22"/></svg>',
   learn: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 3H8C9 3 10 4 10 5V21C10 20 9 19 8 19H2V3M22 3H16C15 3 14 4 14 5V21C14 20 15 19 16 19H22V3M7 7H5M7 11H5M7 15H5M19 7H17M19 11H17M19 15H17"/></svg>',
   lock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7C7 4.24 9.24 2 12 2C14.76 2 17 4.24 17 7V11"/></svg>',
-  ask: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 11.5C21 16.75 16.75 21 11.5 21C9.83 21 8.27 20.55 6.93 19.78L3 21L4.22 17.07C3.45 15.73 3 14.17 3 12.5C3 7.25 7.25 3 12.5 3C16.75 3 20.25 6.25 20.25 10.5"/></svg>'
+  ask: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 11.5C21 16.75 16.75 21 11.5 21C9.83 21 8.27 20.55 6.93 19.78L3 21L4.22 17.07C3.45 15.73 3 14.17 3 12.5C3 7.25 7.25 3 12.5 3C16.75 3 20.25 6.25 20.25 10.5"/></svg>',
+  insights: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7L12 12L22 7L12 2Z"/><path d="M2 17L12 22L22 17M2 12L12 17L22 12"/></svg>'
 };
 
 function nav(active) {
   const items = [
     ["home", "HOME", ICONS.home],
     ["analyze", "ANALYZE", ICONS.analyze],
-    ["ask", "ASK AI", ICONS.ask],
+    ["ask", "AI", ICONS.ask],
     ["dashboard", "STATS", ICONS.dashboard],
+    ["insights", "TIPS", ICONS.insights],
     ["patterns", "PATTERNS", ICONS.patterns]
   ];
   return `<div class="nav">${items.map(([k, v, icon]) => 
@@ -401,15 +454,23 @@ const pages = {
   home: `${nav("home")}
 <div class="head"><div class="logo">⚡ INSTANT PICKS ⚡</div><div class="tag">SMART PICKS • NOT SURE PROMISES</div></div>
 <div class="hero">
-  <div class="hero-stat"><div class="num" id="h-total">0</div><div class="lbl">ANALYSES</div></div>
+  <div class="hero-stat"><div class="num" id="h-total">0</div><div class="lbl">TOTAL</div></div>
   <div class="hero-stat"><div class="num" id="h-rate">0%</div><div class="lbl">WIN RATE</div></div>
-  <div class="hero-stat"><div class="num">14</div><div class="lbl">PLATFORMS</div></div>
+  <div class="hero-stat"><div class="num" id="h-streak">0</div><div class="lbl">STREAK</div></div>
 </div>
+<div class="streak-msg" id="streak-msg" style="display:none"></div>
 <div class="card glow">
   <h2 class="ct">WELCOME TO INSTANT PICKS</h2>
-  <p class="txt">Your intelligent betting co-pilot with <b class="hl">Gemini 2.5 AI</b> + <b class="hl">self-learning patterns</b>.</p>
+  <p class="txt">Your intelligent betting co-pilot with <b class="hl">Gemini AI</b>, <b class="hl">streak intelligence</b>, and <b class="hl">self-learning patterns</b>.</p>
   <a href="/analyze" class="btn">START ANALYZING</a>
-  <a href="/ask" class="btn" style="background:linear-gradient(135deg,#00cc6a,#009955);margin-top:10px">ASK THE AI</a>
+  <a href="/insights" class="btn" style="background:linear-gradient(135deg,#ffaa00,#ff8800);margin-top:10px">VIEW INSIGHTS</a>
+</div>
+<div class="card">
+  <h3 class="ct">🧠 POWERED BY</h3>
+  <div class="muted">✓ Gemini 2.5 Flash AI</div>
+  <div class="muted">✓ 14 Betting Platforms</div>
+  <div class="muted">✓ Pattern Engine + Streak Detection</div>
+  <div class="muted">✓ Real-time Insights</div>
 </div>
 <div class="card warn">
   <b class="warn-text">⚠ DISCIPLINE FIRST</b>
@@ -418,18 +479,19 @@ const pages = {
 
   analyze: `${nav("analyze")}
 <div class="head"><div class="logo">⚡ ANALYZE ⚡</div><div class="tag">SMART MATCH ANALYSIS</div></div>
+<div class="streak-msg" id="streak-msg" style="display:none"></div>
 <div class="card">
   <form id="af">
     <label>MODE</label>
     <div class="toggle-row">
       <label class="toggle active" data-type="virtual">VIRTUAL</label>
-      <label class="toggle" data-type="real">REAL FOOTBALL</label>
+      <label class="toggle" data-type="real">REAL</label>
     </div>
     <input type="hidden" name="type" id="typeInput" value="virtual">
     <label>PLATFORM</label>
     <select name="platform" id="platformSel">${PLATFORMS.virtual.map(p => `<option value="${p.id}">${p.name} — ${p.game}</option>`).join("")}</select>
     <label>TEAM A</label>
-    <input name="team_a" placeholder="e.g. Manchester United" required>
+    <input name="team_a" placeholder="e.g. Manchester" required>
     <label>TEAM B</label>
     <input name="team_b" placeholder="e.g. Liverpool" required>
     <label>TEAM A — LAST 5 (W/L/D)</label>
@@ -447,77 +509,74 @@ const pages = {
     </div>
     <input name="form_b" id="form_b" placeholder="L,W,L,D,W" required>
     <div class="row">
-      <div><label>TEAM A POSITION</label><input name="table_a" type="number" placeholder="3" required></div>
-      <div><label>TEAM B POSITION</label><input name="table_b" type="number" placeholder="7" required></div>
+      <div><label>TEAM A POS</label><input name="table_a" type="number" placeholder="3" required></div>
+      <div><label>TEAM B POS</label><input name="table_b" type="number" placeholder="7" required></div>
     </div>
-    <label class="optional-label">HOW IS THE GAME PLAYING? (AI READS THIS)</label>
+    <label class="optional-label">DESCRIBE THE GAME (AI READS)</label>
     <textarea name="conversation" id="conv" rows="3" placeholder="e.g. Team A pressing high, Team B defensive..."></textarea>
-    <button type="submit" class="btn">⚡ ANALYZE WITH AI ⚡</button>
+    <button type="submit" class="btn">⚡ ANALYZE ⚡</button>
   </form>
 </div>
 <div id="result"></div>`,
 
   ask: `${nav("ask")}
-<div class="head"><div class="logo">⚡ ASK AI ⚡</div><div class="tag">GEMINI 2.5 BETTING ANALYST</div></div>
+<div class="head"><div class="logo">⚡ ASK AI ⚡</div><div class="tag">GEMINI BETTING ANALYST</div></div>
 <div class="card glow">
   <h3 class="ct">🧠 INSTANT PICKS AI</h3>
-  <p class="muted">Ask about picks, patterns, strategy. I'm locked to betting analysis — that's my only duty.</p>
+  <p class="muted">Ask about picks, patterns, strategy. Locked to betting analysis.</p>
 </div>
 <div class="card">
   <label>YOUR QUESTION</label>
-  <textarea id="aiQuestion" rows="4" placeholder="e.g. How should I approach Sportybet virtual?"></textarea>
+  <textarea id="aiQuestion" rows="4" placeholder="e.g. How should I manage my bankroll?"></textarea>
   <button class="btn" id="askBtn">⚡ ASK AI ⚡</button>
 </div>
 <div id="aiResponse" class="card" style="display:none">
   <h3 class="ct">AI RESPONSE</h3>
   <div id="aiModel" class="muted" style="font-size:10px;margin-bottom:10px"></div>
   <div id="aiText" class="txt"></div>
-</div>
-<div class="card">
-  <h3 class="ct">TRY ASKING</h3>
-  <div class="muted" style="font-size:12px;line-height:1.8">
-  • "What's the safest bet on Bet9ja virtual?"<br>
-  • "How do I manage my bankroll?"<br>
-  • "Should I chase my losses?"<br>
-  • "What's value betting?"
-  </div>
 </div>`,
 
   dashboard: `${nav("dashboard")}
-<div class="head"><div class="logo">⚡ DASHBOARD ⚡</div><div class="tag">YOUR PERFORMANCE</div></div>
+<div class="head"><div class="logo">⚡ DASHBOARD ⚡</div></div>
 <div class="stats-grid">
-  <div class="stat-card"><div class="stat-num" id="d-total">0</div><div class="stat-lbl">TOTAL</div></div>
+  <div class="stat-card"><div class="stat-num" id="d-total">0</div><div class="stat-lbl">ALL TIME</div></div>
   <div class="stat-card"><div class="stat-num" id="d-wins">0</div><div class="stat-lbl">WINS</div></div>
-  <div class="stat-card"><div class="stat-num" id="d-losses">0</div><div class="stat-lbl">LOSSES</div></div>
+  <div class="stat-card"><div class="stat-num" id="d-today">0</div><div class="stat-lbl">TODAY</div></div>
   <div class="stat-card highlight"><div class="stat-num" id="d-rate">0%</div><div class="stat-lbl">WIN RATE</div></div>
 </div>
+<div class="streak-msg" id="streak-msg" style="display:none"></div>
 <div class="card">
   <a href="/analyze" class="btn">NEW ANALYSIS</a>
-  <a href="/ask" class="btn" style="background:linear-gradient(135deg,#00cc6a,#009955);margin-top:10px">ASK AI</a>
+  <a href="/insights" class="btn" style="background:linear-gradient(135deg,#ffaa00,#ff8800);margin-top:10px">VIEW INSIGHTS</a>
 </div>`,
 
   history: `${nav("history")}
-<div class="head"><div class="logo">⚡ HISTORY ⚡</div><div class="tag">YOUR PAST PREDICTIONS</div></div>
-<div class="card">
-  <h3 class="ct">ALL PREDICTIONS</h3>
-  <div id="hist" class="muted">Loading...</div>
-</div>`,
+<div class="head"><div class="logo">⚡ HISTORY ⚡</div></div>
+<div class="card"><h3 class="ct">ALL PREDICTIONS</h3><div id="hist" class="muted">Loading...</div></div>`,
 
   patterns: `${nav("patterns")}
-<div class="head"><div class="logo">⚡ PATTERNS ⚡</div><div class="tag">AI-DETECTED INSIGHTS</div></div>
+<div class="head"><div class="logo">⚡ PATTERNS ⚡</div></div>
+<div class="card glow"><h3 class="ct">🧠 THE BRAIN IS LEARNING</h3><p class="muted">Patterns with <b class="hl">10+ samples</b> appear below.</p></div>
+<div class="card"><h3 class="ct">DETECTED PATTERNS</h3><div id="patterns-list" class="muted">Log 10+ results to see insights</div></div>`,
+
+  insights: `${nav("insights")}
+<div class="head"><div class="logo">⚡ INSIGHTS ⚡</div><div class="tag">SMART TIPS FOR YOU</div></div>
 <div class="card glow">
-  <h3 class="ct">🧠 THE BRAIN IS LEARNING</h3>
-  <p class="muted">Patterns with <b class="hl">10+ samples</b> appear below.</p>
+  <h3 class="ct">💡 PERSONAL INSIGHTS</h3>
+  <p class="muted">Real-time advice based on your data, streaks, and patterns.</p>
+</div>
+<div id="insights-list">
+  <div class="card muted">Analyzing your data...</div>
 </div>
 <div class="card">
-  <h3 class="ct">DETECTED PATTERNS</h3>
-  <div id="patterns-list" class="muted">Log 10+ results to see insights</div>
+  <a href="/analyze" class="btn">NEW ANALYSIS</a>
 </div>`,
 
   learn: `${nav("learn")}
 <div class="head"><div class="logo">⚡ LEARN ⚡</div></div>
-<div class="card"><h3 class="ct">VALUE BETTING</h3><p class="txt">Finding odds higher than true probability.</p></div>
-<div class="card"><h3 class="ct">BANKROLL</h3><p class="txt">Never bet more than 2-5% per game.</p></div>`,
+<div class="card"><h3 class="ct">VALUE BETTING</h3><p class="txt">Find odds higher than true probability.</p></div>
+<div class="card"><h3 class="ct">BANKROLL</h3><p class="txt">Never bet more than 2-5% per game.</p></div>
+<div class="card"><h3 class="ct">STREAKS</h3><p class="txt">3+ losses = take a break. 3+ wins = stay disciplined.</p></div>`,
 
   about: `${nav("about")}
 <div class="head"><div class="logo">⚡ ABOUT ⚡</div></div>
@@ -532,15 +591,12 @@ const pages = {
   <button class="btn" onclick="adminLogin()">UNLOCK</button>
 </div>
 <div id="panel" style="display:none">
-  <div class="card">
-    <h3 class="ct">STATS</h3>
-    <div id="a-stats" class="muted">Loading...</div>
-  </div>
+  <div class="card"><h3 class="ct">STATS</h3><div id="a-stats" class="muted">Loading...</div></div>
   <div class="card">
     <h3 class="ct">AI BRAIN</h3>
     <div class="muted">Provider: <b class="hl">Google Gemini 2.5</b></div>
     <div class="muted">Status: <b class="hl">ACTIVE</b></div>
-    <div class="muted">Mode: <b class="hl">BETTING ONLY</b></div>
+    <div class="muted">Engines: <b class="hl">Pattern + Streak + Insights</b></div>
   </div>
 </div>`
 };
@@ -549,73 +605,83 @@ function layout(content, active) {
   return `<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>INSTANT PICKS</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-:root{--green:#00ff88;--dark-green:#00cc6a;--black:#0a0a0a;--card:#161616;--red:#ff3333;--gray:#888;--yellow:#ffaa00}
-body{font-family:'Courier New',monospace;background:var(--black);color:#fff;min-height:100vh;overflow-x:hidden}
-canvas#matrix{position:fixed;top:0;left:0;width:100%;height:100%;z-index:0;opacity:.18}
+:root{--green:#00ff88;--dark-green:#00cc6a;--black:#0a0a0a;--card:#161616;--red:#ff3333;--gray:#888;--yellow:#ffaa00;--orange:#ff8800}
+body{font-family:'Courier New',monospace;background:var(--black);color:#fff;min-height:100vh;overflow-x:hidden;-webkit-tap-highlight-color:transparent}
+canvas#matrix{position:fixed;top:0;left:0;width:100%;height:100%;z-index:0;opacity:.15}
 .lightning{position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,255,136,.05);z-index:1;pointer-events:none;animation:flash 6s infinite}
 @keyframes flash{0%,95%,100%{opacity:0}96%{opacity:1;background:rgba(0,255,136,.2)}97%{opacity:0}98%{opacity:.8;background:rgba(0,255,136,.1)}}
 .scan{position:fixed;top:0;left:0;width:100%;height:2px;background:var(--green);box-shadow:0 0 10px var(--green);animation:scan 4s linear infinite;z-index:5;pointer-events:none}
 @keyframes scan{0%{top:0}100%{top:100%}}
-.c{position:relative;z-index:2;max-width:560px;margin:0 auto;padding:12px}
-.nav{display:flex;gap:4px;margin-bottom:18px;flex-wrap:wrap;background:rgba(0,0,0,.6);padding:6px;border-radius:10px;border:1px solid rgba(0,255,136,.2);backdrop-filter:blur(10px)}
-.nav a{flex:1;min-width:50px;text-align:center;padding:9px 4px;color:var(--gray);text-decoration:none;font-size:9px;font-weight:700;letter-spacing:1px;border-radius:6px;transition:.3s;display:flex;flex-direction:column;align-items:center;gap:3px}
-.nav a .icon{width:18px;height:18px;display:block}
+.c{position:relative;z-index:2;max-width:560px;margin:0 auto;padding:12px;padding-bottom:80px}
+.nav{display:flex;gap:3px;margin-bottom:18px;flex-wrap:wrap;background:rgba(0,0,0,.7);padding:5px;border-radius:10px;border:1px solid rgba(0,255,136,.2);backdrop-filter:blur(10px);position:sticky;top:8px;z-index:10}
+.nav a{flex:1;min-width:48px;text-align:center;padding:8px 3px;color:var(--gray);text-decoration:none;font-size:8px;font-weight:700;letter-spacing:1px;border-radius:5px;transition:.3s;display:flex;flex-direction:column;align-items:center;gap:2px}
+.nav a .icon{width:16px;height:16px;display:block}
 .nav a .icon svg{width:100%;height:100%;stroke:var(--gray);transition:.3s}
 .nav a.active,.nav a:hover{background:rgba(0,255,136,.15);color:var(--green)}
 .nav a.active .icon svg,.nav a:hover .icon svg{stroke:var(--green);filter:drop-shadow(0 0 5px var(--green))}
 .nav a.admin-btn{background:rgba(255,51,51,.1)}
 .nav a.admin-btn .icon svg{stroke:var(--red)}
 .nav a.admin-btn.active{background:rgba(255,51,51,.3);color:var(--red)}
-.head{text-align:center;padding:20px 0 15px;border-bottom:1px solid rgba(0,255,136,.2);margin-bottom:20px}
-.logo{font-size:26px;font-weight:900;color:var(--green);text-shadow:0 0 20px var(--green);letter-spacing:3px;animation:glow 2s infinite alternate}
+.head{text-align:center;padding:18px 0 12px;border-bottom:1px solid rgba(0,255,136,.2);margin-bottom:18px}
+.logo{font-size:24px;font-weight:900;color:var(--green);text-shadow:0 0 20px var(--green);letter-spacing:2px;animation:glow 2s infinite alternate}
 @keyframes glow{from{text-shadow:0 0 10px var(--green)}to{text-shadow:0 0 30px var(--green),0 0 50px var(--green)}}
-.tag{color:var(--gray);font-size:10px;margin-top:6px;letter-spacing:3px}
-.card{background:linear-gradient(135deg,rgba(0,255,136,.03),var(--card));border:1px solid rgba(0,255,136,.2);border-radius:12px;padding:18px;margin:10px 0;backdrop-filter:blur(10px)}
+.tag{color:var(--gray);font-size:9px;margin-top:5px;letter-spacing:2px}
+.card{background:linear-gradient(135deg,rgba(0,255,136,.03),var(--card));border:1px solid rgba(0,255,136,.2);border-radius:12px;padding:16px;margin:10px 0;backdrop-filter:blur(10px);transition:.3s}
+.card:hover{border-color:rgba(0,255,136,.3)}
 .card.glow{box-shadow:0 0 30px rgba(0,255,136,.1);border-color:rgba(0,255,136,.4)}
 .card.warn{border-color:rgba(255,51,51,.3);background:linear-gradient(135deg,rgba(255,51,51,.05),var(--card))}
-.ct{color:var(--green);margin-bottom:12px;font-size:15px;letter-spacing:1px}
+.card.tip-good{border-color:rgba(0,255,136,.4);background:linear-gradient(135deg,rgba(0,255,136,.08),var(--card))}
+.card.tip-warn{border-color:rgba(255,170,0,.4);background:linear-gradient(135deg,rgba(255,170,0,.08),var(--card))}
+.streak-msg{background:linear-gradient(135deg,rgba(255,170,0,.1),var(--card));border:1px solid var(--yellow);border-radius:10px;padding:12px;margin:10px 0;text-align:center;font-weight:700;color:var(--yellow)}
+.ct{color:var(--green);margin-bottom:10px;font-size:14px;letter-spacing:1px}
 .txt{color:#ccc;line-height:1.6;font-size:13px;white-space:pre-wrap}
 .hl{color:var(--green);text-shadow:0 0 5px var(--green);text-decoration:none}
 .warn-text{color:var(--red);text-shadow:0 0 5px var(--red)}
-.muted{color:var(--gray);font-size:13px;line-height:1.6}
-label{display:block;color:var(--green);font-size:11px;font-weight:700;margin:14px 0 6px;letter-spacing:2px}
-.optional-label{color:var(--yellow);font-size:10px}
-input,select,textarea{width:100%;padding:13px;background:rgba(0,0,0,.5);color:#fff;border:1px solid #333;border-radius:8px;font-size:14px;font-family:inherit}
+.muted{color:var(--gray);font-size:12px;line-height:1.6;margin:4px 0}
+label{display:block;color:var(--green);font-size:10px;font-weight:700;margin:12px 0 5px;letter-spacing:2px}
+.optional-label{color:var(--yellow);font-size:9px}
+input,select,textarea{width:100%;padding:12px;background:rgba(0,0,0,.5);color:#fff;border:1px solid #333;border-radius:8px;font-size:14px;font-family:inherit;transition:.3s}
 input:focus,select:focus,textarea:focus{outline:none;border-color:var(--green);box-shadow:0 0 10px rgba(0,255,136,.3)}
 textarea{resize:vertical;min-height:60px}
-.row{display:flex;gap:10px;margin-top:5px}.row>div{flex:1}
-.btn{width:100%;padding:15px;background:linear-gradient(135deg,var(--green),var(--dark-green));color:#000;font-weight:900;font-size:13px;border:none;border-radius:8px;margin-top:18px;cursor:pointer;text-transform:uppercase;letter-spacing:2px;font-family:inherit;box-shadow:0 0 20px rgba(0,255,136,.4);transition:.3s;text-decoration:none;display:inline-block;text-align:center}
-.btn:hover{box-shadow:0 0 40px rgba(0,255,136,.7)}
-.btn:disabled{opacity:.5;cursor:wait}
-.hero{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:15px 0}
-.hero-stat{background:var(--card);border:1px solid rgba(0,255,136,.2);border-radius:10px;padding:12px;text-align:center}
-.hero-stat .num{font-size:24px;font-weight:900;color:var(--green);text-shadow:0 0 10px var(--green)}
-.hero-stat .lbl{font-size:9px;color:var(--gray);letter-spacing:2px;margin-top:4px}
-.stats-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin:12px 0}
-.stat-card{background:var(--card);border:1px solid rgba(0,255,136,.2);border-radius:10px;padding:18px;text-align:center}
+.row{display:flex;gap:8px;margin-top:5px}.row>div{flex:1}
+.btn{width:100%;padding:14px;background:linear-gradient(135deg,var(--green),var(--dark-green));color:#000;font-weight:900;font-size:13px;border:none;border-radius:8px;margin-top:14px;cursor:pointer;text-transform:uppercase;letter-spacing:2px;font-family:inherit;box-shadow:0 0 20px rgba(0,255,136,.4);transition:.3s;text-decoration:none;display:inline-block;text-align:center}
+.btn:hover{box-shadow:0 0 40px rgba(0,255,136,.7);transform:translateY(-1px)}
+.btn:active{transform:scale(.98)}
+.btn:disabled{opacity:.5;cursor:wait;transform:none}
+.hero{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin:12px 0}
+.hero-stat{background:var(--card);border:1px solid rgba(0,255,136,.2);border-radius:10px;padding:10px;text-align:center}
+.hero-stat .num{font-size:20px;font-weight:900;color:var(--green);text-shadow:0 0 10px var(--green)}
+.hero-stat .lbl{font-size:8px;color:var(--gray);letter-spacing:2px;margin-top:3px}
+.stats-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:6px;margin:10px 0}
+.stat-card{background:var(--card);border:1px solid rgba(0,255,136,.2);border-radius:10px;padding:14px;text-align:center}
 .stat-card.highlight{border-color:var(--green);box-shadow:0 0 20px rgba(0,255,136,.2)}
-.stat-num{font-size:30px;font-weight:900;color:var(--green);text-shadow:0 0 10px var(--green)}
-.stat-lbl{font-size:10px;color:var(--gray);letter-spacing:2px;margin-top:5px}
-.toggle-row{display:flex;gap:6px;margin:8px 0}
-.toggle{flex:1;text-align:center;padding:12px;background:rgba(0,0,0,.5);border:1px solid #333;border-radius:8px;cursor:pointer;font-size:12px;font-weight:700;letter-spacing:1px;color:var(--gray);transition:.3s}
+.stat-num{font-size:26px;font-weight:900;color:var(--green);text-shadow:0 0 10px var(--green)}
+.stat-lbl{font-size:9px;color:var(--gray);letter-spacing:2px;margin-top:3px}
+.toggle-row{display:flex;gap:5px;margin:6px 0}
+.toggle{flex:1;text-align:center;padding:11px;background:rgba(0,0,0,.5);border:1px solid #333;border-radius:8px;cursor:pointer;font-size:11px;font-weight:700;letter-spacing:1px;color:var(--gray);transition:.3s}
 .toggle.active{background:rgba(0,255,136,.15);border-color:var(--green);color:var(--green);box-shadow:0 0 10px rgba(0,255,136,.2)}
-.qt-row{display:flex;gap:6px;margin:8px 0}
-.qt{flex:1;padding:10px;background:rgba(0,0,0,.5);color:#fff;border:1px solid #333;border-radius:6px;cursor:pointer;font-family:inherit;font-weight:700;transition:.2s}
+.qt-row{display:flex;gap:5px;margin:6px 0}
+.qt{flex:1;padding:10px;background:rgba(0,0,0,.5);color:#fff;border:1px solid #333;border-radius:6px;cursor:pointer;font-family:inherit;font-weight:700;font-size:13px;transition:.2s}
 .qt:hover,.qt:active{background:rgba(0,255,136,.2);border-color:var(--green)}
-.tag2{display:inline-block;background:var(--green);color:#000;padding:3px 10px;border-radius:15px;font-size:10px;font-weight:900;letter-spacing:1px}
+.tag2{display:inline-block;background:var(--green);color:#000;padding:3px 10px;border-radius:15px;font-size:9px;font-weight:900;letter-spacing:1px}
 .risk-low{background:#003300;color:var(--green);border:1px solid var(--green)}
 .risk-medium{background:#332200;color:var(--yellow);border:1px solid var(--yellow)}
 .risk-high{background:#330000;color:var(--red);border:1px solid var(--red)}
-.name{font-size:17px;font-weight:800;margin:10px 0 5px}
-.conf{font-size:38px;font-weight:900;color:var(--green);text-shadow:0 0 15px var(--green)}
-.why{color:var(--gray);font-size:12px;margin:8px 0;line-height:1.5}
-.btns{display:flex;gap:8px;margin-top:12px}
-.btns form{flex:1;display:flex;gap:8px}
-button.w,button.l{flex:1;padding:12px;border:none;border-radius:8px;font-weight:900;cursor:pointer;font-family:inherit;font-size:12px;letter-spacing:1px}
+.name{font-size:16px;font-weight:800;margin:8px 0 4px}
+.conf{font-size:34px;font-weight:900;color:var(--green);text-shadow:0 0 15px var(--green)}
+.why{color:var(--gray);font-size:11px;margin:6px 0;line-height:1.5}
+.btns{display:flex;gap:6px;margin-top:10px}
+.btns form{flex:1;display:flex;gap:6px}
+button.w,button.l{flex:1;padding:11px;border:none;border-radius:8px;font-weight:900;cursor:pointer;font-family:inherit;font-size:11px;letter-spacing:1px;transition:.2s}
 button.w{background:var(--green);color:#000;box-shadow:0 0 15px rgba(0,255,136,.5)}
+button.w:hover{box-shadow:0 0 25px rgba(0,255,136,.8)}
 button.l{background:#1a0000;color:var(--red);border:1px solid var(--red)}
-.list{color:#ccc;line-height:2;font-size:13px;padding-left:20px}
-.pattern-item{background:rgba(0,255,136,.05);border-left:3px solid var(--green);padding:10px;margin:8px 0;border-radius:6px}
+button.l:hover{background:#220000}
+.pattern-item{background:rgba(0,255,136,.05);border-left:3px solid var(--green);padding:10px;margin:6px 0;border-radius:6px}
+.insight-item{padding:12px;margin:8px 0;border-radius:8px;font-size:12px;line-height:1.5}
+.insight-good{background:rgba(0,255,136,.08);border-left:3px solid var(--green);color:#aaffcc}
+.insight-warn{background:rgba(255,170,0,.08);border-left:3px solid var(--yellow);color:#ffd699}
+.insight-info{background:rgba(0,170,255,.08);border-left:3px solid #00aaff;color:#99ddff}
 </style></head><body>
 <canvas id="matrix"></canvas>
 <div class="lightning"></div>
@@ -655,6 +721,7 @@ document.querySelectorAll('.toggle').forEach(t=>{
     sel.innerHTML=platforms[t.dataset.type].map(p=>'<option value="'+p.id+'">'+p.name+' — '+(p.game||p.country)+'</option>').join('');
   });
 });
+function showStreak(msg){const el=document.getElementById('streak-msg');if(el&&msg){el.textContent=msg;el.style.display='block';}else if(el){el.style.display='none';}}
 async function loadStats(){
   try{
     const r=await fetch('/api/stats');const s=await r.json();
@@ -663,8 +730,17 @@ async function loadStats(){
     const hr=document.getElementById('h-rate');if(hr)hr.textContent=rate+'%';
     const dt=document.getElementById('d-total');if(dt)dt.textContent=s.total;
     const dw=document.getElementById('d-wins');if(dw)dw.textContent=s.wins;
-    const dl=document.getElementById('d-losses');if(dl)dl.textContent=s.total-s.wins;
+    const dt2=document.getElementById('d-today');if(dt2)dt2.textContent=s.todayTotal||0;
     const dr=document.getElementById('d-rate');if(dr)dr.textContent=rate+'%';
+    if(s.total>0){
+      const r2=await fetch('/api/predictions');const p=await r2.json();
+      const recent=p.slice(0,10).filter(x=>x.status==='win'||x.status==='lose');
+      let cur=0,type=recent[0]?recent[0].status:'none';
+      for(const x of recent){if(x.status===type)cur++;else break;}
+      const hs=document.getElementById('h-streak');if(hs)hs.textContent=cur+(type==='win'?'W':type==='lose'?'L':'');
+      if(type==='lose'&&cur>=3)showStreak('⚠️ '+cur+' losses in a row — take a break');
+      else if(type==='win'&&cur>=3)showStreak('🔥 '+cur+' wins hot streak — stay disciplined');
+    }
   }catch(e){}}
 loadStats();
 async function loadPatterns(){
@@ -674,10 +750,10 @@ async function loadPatterns(){
     if(!list)return;
     const rules=p.rules||{};
     const active=Object.entries(rules).filter(([k,v])=>v.total>=10).sort((a,b)=>b[1].confidence-a[1].confidence);
-    if(!active.length){list.innerHTML='No active patterns yet. <b class="hl">Log 10+ results</b> to see insights.';return}
-    list.innerHTML=active.map(([key,r])=>{
+    if(!active.length){list.innerHTML='Log 10+ results to see patterns';return}
+    list.innerHTML=active.slice(0,10).map(([key,r])=>{
       const readable=key.replace(/_/g,' ').replace(/\\d+/g,'').toUpperCase();
-      return '<div class="pattern-item"><b class="hl">'+readable+'</b><br><span class="muted">'+r.hits+' wins / '+r.total+' games = <b class="hl">'+r.confidence+'%</b> accuracy</span></div>';
+      return '<div class="pattern-item"><b class="hl">'+readable+'</b><br><span class="muted">'+r.hits+'/'+r.total+' = <b class="hl">'+r.confidence+'%</b></span></div>';
     }).join('');
   }catch(e){}}
 loadPatterns();
@@ -685,21 +761,38 @@ async function loadHistory(){
   try{const r=await fetch('/api/predictions');const p=await r.json();
   const h=document.getElementById('hist');if(!h)return;
   if(!p.length){h.innerHTML='No predictions yet.';return}
-  h.innerHTML=p.map(x=>'<div style="padding:10px;border-bottom:1px solid #222"><div style="display:flex;justify-content:space-between"><b class="hl">'+x.match+'</b><span style="color:var(--gray);font-size:10px">'+x.platform.toUpperCase()+'</span></div><div style="color:var(--gray);font-size:11px;margin-top:3px">'+new Date(x.time).toLocaleString()+'</div><div style="font-size:11px;margin-top:4px">Status: '+(x.status==='win'?'<b class="hl">WIN</b>':x.status==='lose'?'<b class="warn-text">LOSE</b>':'<span class="muted">PENDING</span>')+'</div></div>').join('');
+  h.innerHTML=p.map(x=>'<div style="padding:10px;border-bottom:1px solid #222"><div style="display:flex;justify-content:space-between"><b class="hl">'+x.match+'</b><span style="color:var(--gray);font-size:9px">'+x.platform.toUpperCase()+'</span></div><div style="color:var(--gray);font-size:10px;margin-top:2px">'+new Date(x.time).toLocaleString()+'</div><div style="font-size:10px;margin-top:3px">'+(x.status==='win'?'<b class="hl">✓ WIN</b>':x.status==='lose'?'<b class="warn-text">✗ LOSE</b>':'<span class="muted">PENDING</span>')+'</div></div>').join('');
   }catch(e){}}
 loadHistory();
+async function loadInsights(){
+  try{
+    const r=await fetch('/api/insights');const d=await r.json();
+    const list=document.getElementById('insights-list');
+    if(!list)return;
+    if(!d.insights.length){
+      list.innerHTML='<div class="card muted">No insights yet — make some analyses and log results to get personalized tips.</div>';
+      return;
+    }
+    list.innerHTML=d.insights.map(i=>{
+      const cls=i.type==='good'?'insight-good':i.type==='warn'?'insight-warn':'insight-info';
+      const icon=i.type==='good'?'✓':i.type==='warn'?'⚠':'ℹ';
+      return '<div class="insight-item '+cls+'">'+icon+' '+i.text+'</div>';
+    }).join('');
+  }catch(e){}}
+loadInsights();
 const af=document.getElementById('af');
 if(af)af.addEventListener('submit',async e=>{
   e.preventDefault();
   const btn=af.querySelector('button[type=submit]');
-  const orig=btn.textContent;btn.disabled=true;btn.textContent='AI ANALYZING...';
+  const orig=btn.textContent;btn.disabled=true;btn.textContent='ANALYZING...';
   const fd=new FormData(af);
   try{
     const r=await fetch('/api/analyze',{method:'POST',body:fd});
     const d=await r.json();
     if(d.ok){
+      if(d.streaks&&d.streaks.message)showStreak(d.streaks.message);else showStreak('');
       const res=document.getElementById('result');
-      res.innerHTML='<div class="head"><div style="font-size:18px;font-weight:800">'+d.teamA+' <span class="hl">VS</span> '+d.teamB+'</div><div style="color:var(--gray);font-size:10px;letter-spacing:2px;margin-top:5px">'+d.platform.toUpperCase()+' • '+d.type.toUpperCase()+'</div></div>'+d.picks.map((p,i)=>'<div class="card"><div style="display:flex;justify-content:space-between;align-items:center"><span class="tag2">PICK #'+(i+1)+'</span><span class="risk-'+p.risk+'" style="padding:3px 10px;border-radius:15px;font-size:10px;font-weight:900">'+p.risk.toUpperCase()+'</span></div><div class="name">'+p.pick+'</div><div class="conf">'+p.conf+'%</div><div class="why">'+p.why+'</div><div class="btns"><form><input type="hidden" value="'+d.predId+'" name="pid"><input type="hidden" value="'+d.teamA+' vs '+d.teamB+'" name="m"><input type="hidden" value="'+p.pick+'" name="p"><button class="w" name="o" value="win">WIN</button><button class="l" name="o" value="lose">LOSE</button></form></div></div>').join('')+'<a href="/analyze" class="btn">NEW ANALYSIS</a>';
+      res.innerHTML='<div class="head"><div style="font-size:17px;font-weight:800">'+d.teamA+' <span class="hl">VS</span> '+d.teamB+'</div><div style="color:var(--gray);font-size:9px;letter-spacing:2px;margin-top:4px">'+d.platform.toUpperCase()+' • '+d.type.toUpperCase()+'</div></div>'+d.picks.map((p,i)=>'<div class="card"><div style="display:flex;justify-content:space-between;align-items:center"><span class="tag2">PICK #'+(i+1)+'</span><span class="risk-'+p.risk+'" style="padding:2px 8px;border-radius:15px;font-size:9px;font-weight:900">'+p.risk.toUpperCase()+'</span></div><div class="name">'+p.pick+'</div><div class="conf">'+p.conf+'%</div><div class="why">'+p.why+'</div><div class="btns"><form><input type="hidden" value="'+d.predId+'" name="pid"><input type="hidden" value="'+d.teamA+' vs '+d.teamB+'" name="m"><input type="hidden" value="'+p.pick+'" name="p"><button class="w" name="o" value="win">WIN</button><button class="l" name="o" value="lose">LOSE</button></form></div></div>').join('')+'<a href="/analyze" class="btn">NEW ANALYSIS</a>';
       res.scrollIntoView({behavior:'smooth'});
       res.querySelectorAll('form').forEach(f=>f.addEventListener('submit',async ev=>{
         ev.preventDefault();
@@ -709,8 +802,8 @@ if(af)af.addEventListener('submit',async e=>{
         fd.append('pick',f.querySelector('[name=p]').value);
         fd.append('outcome',ev.submitter.value);
         await fetch('/api/result',{method:'POST',body:fd});
-        alert('Logged! Pattern engine + AI updated.');
-        loadStats();loadHistory();loadPatterns();
+        alert('Logged! Engines updated.');
+        loadStats();loadHistory();loadPatterns();loadInsights();
       }));
     }
   }catch(e){alert('Error: '+e.message)}
@@ -720,7 +813,7 @@ const askBtn=document.getElementById('askBtn');
 if(askBtn)askBtn.addEventListener('click',async()=>{
   const q=document.getElementById('aiQuestion').value.trim();
   if(!q){alert('Please ask a question');return}
-  askBtn.disabled=true;askBtn.textContent='AI THINKING...';
+  askBtn.disabled=true;askBtn.textContent='THINKING...';
   const fd=new FormData();fd.append('question',q);
   try{
     const r=await fetch('/api/ai/ask',{method:'POST',body:fd});
@@ -733,9 +826,7 @@ if(askBtn)askBtn.addEventListener('click',async()=>{
       mod.textContent='Model: '+(d.model||'AI');
       box.style.display='block';
       box.scrollIntoView({behavior:'smooth'});
-    }else{
-      alert('AI error: '+d.error+(d.details?'\\n\\nDetails: '+d.details.substring(0,200):''));
-    }
+    }else alert('AI error: '+d.error);
   }catch(e){alert('Error: '+e.message)}
   askBtn.disabled=false;askBtn.textContent='⚡ ASK AI ⚡';
 });
@@ -749,7 +840,7 @@ async function adminLogin(){
     document.getElementById('panel').style.display='block';
     const sr=await fetch('/api/stats');const ss=await sr.json();
     const rate=ss.total>0?Math.round(ss.wins/ss.total*1000)/10:0;
-    document.getElementById('a-stats').innerHTML='<div style="margin:8px 0"><b class="hl">Total:</b> '+ss.total+'</div><div style="margin:8px 0"><b class="hl">Wins:</b> '+ss.wins+'</div><div style="margin:8px 0"><b class="hl">Win Rate:</b> '+rate+'%</div>';
+    document.getElementById('a-stats').innerHTML='<div style="margin:6px 0"><b class="hl">Total:</b> '+ss.total+'</div><div style="margin:6px 0"><b class="hl">Wins:</b> '+ss.wins+'</div><div style="margin:6px 0"><b class="hl">Today:</b> '+(ss.todayTotal||0)+'</div><div style="margin:6px 0"><b class="hl">Win Rate:</b> '+rate+'%</div>';
   }else alert('Wrong password');
 }
 </script>
