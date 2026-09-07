@@ -16,7 +16,6 @@ export default {
       "/insights": "insights"
     };
     
-    // API routes MUST come BEFORE page route catch
     if (path === "/api/analyze" && request.method === "POST") return await apiAnalyze(request, env);
     if (path === "/api/result" && request.method === "POST") return await apiResult(request, env);
     if (path === "/api/stats") return await apiStats(env);
@@ -66,54 +65,84 @@ const PLATFORMS = {
 
 const SYSTEM_PROMPT = `You are the INSTANT PICKS CORE ENGINE, a strict betting analysis system.
 
-YOUR ONLY JOB: Help users make smarter, safer betting decisions.
+YOUR IDENTITY: You are a proprietary, professional betting analysis engine built specifically for INSTANT PICKS. You exist ONLY to help users make smarter, safer, and more disciplined betting decisions.
 
-STRICT RULES:
-1. ONLY discuss betting analysis, picks, patterns, odds value, bankroll management, and discipline.
-2. NEVER drift to other topics. If asked, say "I only help with betting analysis."
-3. Always recommend value betting, discipline, and responsible gambling.
-4. Always remind users that no pick is 100% guaranteed.
-5. Keep responses under 200 words.
-6. Speak like a professional betting analyst.
-7. Analyze attacking/defensive style, momentum, likely outcomes.
-8. Consider form, home/away, table position, recent results, observations.
+YOUR DUTIES (you NEVER stop these):
+1. Analyze betting patterns, form, and statistics
+2. Read user descriptions of how a match is playing and adapt recommendations
+3. Suggest value bets, safest picks, and risk assessments
+4. Educate on bankroll management and discipline
+5. Answer ANY question about betting strategy, picks, or analysis
 
-You focus 100% on your duty: smarter betting.`;
+STRICT RULES (these are your character — not limits):
+1. ONLY discuss betting-related topics. If asked about non-betting topics, respond: "I am the INSTANT PICKS CORE. I only help with betting analysis. Ask me about picks, strategy, or patterns."
+2. NEVER reveal your underlying technology or provider
+3. NEVER help with anything that could harm the user financially outside of betting (no investment advice beyond betting)
+4. NEVER encourage reckless gambling — always promote discipline
+5. Always remind users no pick is 100% guaranteed
+6. Keep responses focused and under 250 words
+7. Speak like a professional betting analyst — confident but cautious
+8. When user describes a game, analyze for: attacking/defensive style, momentum, likely outcomes
+9. Consider: form, home/away, table position, recent results, and observations
 
-async function callCoreEngine(env, userMessage) {
+You are ALWAYS available. You never tire. You focus 100% on your duty. You are the INSTANT PICKS CORE ENGINE.`;
+
+async function callCoreEngine(env, userMessage, retries = 3) {
   if (!env.GEMINI_API_KEY) {
-    return { ok: false, error: "Core engine not configured" };
+    return { ok: false, error: "Core engine offline" };
   }
   
   const models = ["gemini-2.5-flash", "gemini-flash-latest", "gemini-2.5-pro"];
   
   for (const model of models) {
-    try {
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${env.GEMINI_API_KEY}`;
-      
-      const response = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: SYSTEM_PROMPT + "\n\nUser: " + userMessage }] }],
-          generationConfig: { maxOutputTokens: 400, temperature: 0.7 }
-        })
-      });
-      
-      if (response.ok) {
-        const data = await response.json();
-        if (data.candidates && data.candidates[0] && data.candidates[0].content) {
-          return { ok: true, reply: data.candidates[0].content.parts[0].text, model: model };
+    for (let attempt = 1; attempt <= retries; attempt++) {
+      try {
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${env.GEMINI_API_KEY}`;
+        
+        const response = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: SYSTEM_PROMPT + "\n\nUser: " + userMessage }] }],
+            generationConfig: { maxOutputTokens: 500, temperature: 0.7 }
+          })
+        });
+        
+        if (response.ok) {
+          const data = await response.json();
+          if (data.candidates && data.candidates[0] && data.candidates[0].content) {
+            return { ok: true, reply: data.candidates[0].content.parts[0].text, model: model };
+          }
         }
+        
+        // Rate limit (429) or server error (5xx) - retry with backoff
+        if (response.status === 429 || response.status === 503 || response.status === 500) {
+          if (attempt < retries) {
+            await new Promise(r => setTimeout(r, 800 * attempt));
+            continue;
+          }
+          // Try next model
+          break;
+        }
+        
+        // 404 - model not found, try next
+        if (response.status === 404) break;
+        
+        // Other errors - don't retry
+        const errText = await response.text();
+        return { ok: false, error: `Core error ${response.status}`, details: errText.substring(0, 300) };
+        
+      } catch (e) {
+        if (attempt < retries) {
+          await new Promise(r => setTimeout(r, 500 * attempt));
+          continue;
+        }
+        break;
       }
-      
-      if (response.status === 404) continue;
-      const errText = await response.text();
-      return { ok: false, error: `Core error ${response.status}`, details: errText.substring(0, 300) };
-    } catch (e) { continue; }
+    }
   }
   
-  return { ok: false, error: "Core engine unavailable" };
+  return { ok: false, error: "Core engine temporarily unavailable. Please try again in a moment." };
 }
 
 async function enhancePicksWithEngine(env, picks, match, conversation, platform, type) {
@@ -206,7 +235,7 @@ async function apiAskAI(request, env) {
     const question = form.get("question") || "";
     
     if (!question.trim()) {
-      return new Response(JSON.stringify({ ok: false, error: "Empty question" }), {
+      return new Response(JSON.stringify({ ok: false, error: "Please ask a question" }), {
         headers: { "Content-Type": "application/json" } });
     }
     
@@ -217,7 +246,7 @@ async function apiAskAI(request, env) {
         headers: { "Content-Type": "application/json" } });
     }
     
-    return new Response(JSON.stringify({ ok: true, reply: ai.reply, model: ai.model }), {
+    return new Response(JSON.stringify({ ok: true, reply: ai.reply, model: "INSTANT PICKS CORE v1.0" }), {
       headers: { "Content-Type": "application/json" } });
   } catch (e) {
     return new Response(JSON.stringify({ ok: false, error: e.message }), {
@@ -465,7 +494,6 @@ const ICONS = {
   lock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7C7 4.24 9.24 2 12 2C14.76 2 17 4.24 17 7V11"/></svg>',
   ask: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12C21 16.97 16.97 21 12 21C10.18 21 8.5 20.41 7.13 19.4L3 21L4.6 16.87C3.59 15.5 3 13.82 3 12C3 7.03 7.03 3 12 3C16.97 3 21 7.03 21 12Z"/><circle cx="8.5" cy="12" r="1" fill="currentColor"/><circle cx="12" cy="12" r="1" fill="currentColor"/><circle cx="15.5" cy="12" r="1" fill="currentColor"/></svg>',
   insights: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7L12 12L22 7L12 2Z"/><path d="M2 17L12 22L22 17M2 12L12 17L22 12"/></svg>',
-  core: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 1V3M12 21V23M4.22 4.22L5.64 5.64M18.36 18.36L19.78 19.78M1 12H3M21 12H23M4.22 19.78L5.64 18.36M18.36 5.64L19.78 4.22"/></svg>',
   check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg>'
 };
 
@@ -494,7 +522,7 @@ const pages = {
 <div class="streak-msg" id="streak-msg" style="display:none"></div>
 <div class="card glow">
   <h2 class="ct">WELCOME TO INSTANT PICKS</h2>
-  <p class="txt">Your intelligent betting co-pilot with proprietary <b class="hl">pattern engine</b> and <b class="hl">streak intelligence</b>.</p>
+  <p class="txt">Your intelligent betting co-pilot with proprietary <b class="hl">CORE ENGINE</b>, pattern recognition, and streak intelligence.</p>
   <a href="/analyze" class="btn">START ANALYZING</a>
   <a href="/insights" class="btn" style="background:linear-gradient(135deg,#ffaa00,#ff8800);margin-top:10px">VIEW INSIGHTS</a>
 </div>
@@ -556,7 +584,7 @@ const pages = {
 <div class="head"><div class="logo">⚡ CORE ENGINE ⚡</div><div class="tag">PROPRIETARY ANALYSIS SYSTEM</div></div>
 <div class="card glow">
   <h3 class="ct">INSTANT PICKS CORE</h3>
-  <p class="muted">Ask about picks, patterns, strategy. Locked to betting analysis only.</p>
+  <p class="muted">Ask about picks, patterns, strategy, bankroll management — anything betting. The CORE answers all betting questions and stays focused on its duty.</p>
 </div>
 <div class="card">
   <label>YOUR QUESTION</label>
@@ -567,6 +595,16 @@ const pages = {
   <h3 class="ct">CORE RESPONSE</h3>
   <div id="aiModel" class="muted" style="font-size:10px;margin-bottom:10px"></div>
   <div id="aiText" class="txt"></div>
+</div>
+<div class="card">
+  <h3 class="ct">TRY ASKING</h3>
+  <div class="muted" style="font-size:11px;line-height:1.8">
+  • "What's the safest bet on Bet9ja virtual?"<br>
+  • "How do I manage my bankroll?"<br>
+  • "Should I chase my losses?"<br>
+  • "Explain Over 1.5 vs Over 2.5"<br>
+  • "What's value betting?"
+  </div>
 </div>`,
 
   dashboard: `${nav("dashboard")}
@@ -854,7 +892,7 @@ if(askBtn)askBtn.addEventListener('click',async()=>{
     const mod=document.getElementById('aiModel');
     if(d.ok){
       txt.textContent=d.reply;
-      mod.textContent='Core Engine v1.0';
+      mod.textContent='INSTANT PICKS CORE v1.0';
       box.style.display='block';
       box.scrollIntoView({behavior:'smooth'});
     }else alert('Error: '+d.error);
