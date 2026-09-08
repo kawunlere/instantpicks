@@ -66,18 +66,20 @@ async function callCore(env, message) {
       });
       if (r.ok) {
         const d = await r.json();
-        if (d.candidates?.[0]?.content) return { ok: true, reply: d.candidates[0].content.parts[0].text };
+        if (d.candidates && d.candidates[0] && d.candidates[0].content) {
+          return { ok: true, reply: d.candidates[0].content.parts[0].text };
+        }
       }
       if (r.status === 404) continue;
-      if (r.status === 429 || r.status === 503) { await new Promise(x => setTimeout(x, 800)); continue; }
+      if (r.status === 429 || r.status === 503) {
+        await new Promise(x => setTimeout(x, 800));
+        continue;
+      }
     } catch (e) { continue; }
   }
   return { ok: false, error: "Temporarily unavailable" };
 }
 
-// ============================================
-// MATCH ANALYSIS ENGINE (Separate, Modular)
-// ============================================
 function analyzeSingleMatch(teamA, teamB, formA, formB, posA, posB, conversation) {
   const scoreA = formA.reduce((s, r) => s + (r === "W" ? 3 : r === "D" ? 1 : 0), 0);
   const scoreB = formB.reduce((s, r) => s + (r === "W" ? 3 : r === "D" ? 1 : 0), 0);
@@ -103,11 +105,9 @@ function analyzeSingleMatch(teamA, teamB, formA, formB, posA, posB, conversation
   const bStrong = scoreB >= 10;
   const aWeak = scoreA <= 5;
   const bWeak = scoreB <= 5;
-  const balanced = Math.abs(scoreA - scoreB) <= 3;
   
   const picks = [];
   
-  // MAIN PICK (dynamic based on form)
   if (aStrong && bWeak) {
     picks.push({ pick: teamA + " to Win (1)", conf: Math.min(82, Math.round(pHome * 100) + 15), risk: "low", why: teamA + " strong form (" + scoreA + "/15) vs " + teamB + " weak (" + scoreB + "/15)" });
   } else if (bStrong && aWeak) {
@@ -116,7 +116,7 @@ function analyzeSingleMatch(teamA, teamB, formA, formB, posA, posB, conversation
     picks.push({ pick: teamA + " to Win (1)", conf: Math.min(78, Math.round(pHome * 100) + 10), risk: "medium", why: teamA + " good form + top " + posA + " position" });
   } else if (bStrong && posB <= 5) {
     picks.push({ pick: teamB + " to Win (2)", conf: Math.min(78, Math.round(pAway * 100) + 10), risk: "medium", why: teamB + " good form + top " + posB + " position" });
-  } else if (balanced && pDraw > 0.30) {
+  } else if (Math.abs(scoreA - scoreB) <= 3 && pDraw > 0.30) {
     picks.push({ pick: "Double Chance (1X or X2)", conf: Math.round((1 - Math.max(pHome, pAway)) * 100), risk: "low", why: "Both teams evenly matched" });
   } else if (pHome > pAway) {
     picks.push({ pick: teamA + " or Draw (1X)", conf: Math.round((pHome + pDraw) * 100), risk: "low", why: teamA + " slight edge in form/position" });
@@ -124,7 +124,6 @@ function analyzeSingleMatch(teamA, teamB, formA, formB, posA, posB, conversation
     picks.push({ pick: teamB + " or Draw (X2)", conf: Math.round((pAway + pDraw) * 100), risk: "low", why: teamB + " slight edge in form/position" });
   }
   
-  // GOAL PICKS (dynamic based on strength)
   if (aStrong && bStrong) {
     picks.push({ pick: "Over 1.5 Goals", conf: 76, risk: "low", why: "Both teams attacking" });
     picks.push({ pick: "Over 2.5 Goals", conf: 62, risk: "medium", why: "Strong attacks = high scoring" });
@@ -141,7 +140,6 @@ function analyzeSingleMatch(teamA, teamB, formA, formB, posA, posB, conversation
     picks.push({ pick: "Under 3.5 Goals", conf: 70, risk: "low", why: "Not too high scoring" });
   }
   
-  // SAFER PICK
   if (Math.abs(posA - posB) >= 8) {
     const better = posA < posB ? teamA : teamB;
     picks.push({ pick: better + " or Draw", conf: 70, risk: "low", why: "Big position gap favors " + better });
@@ -149,7 +147,6 @@ function analyzeSingleMatch(teamA, teamB, formA, formB, posA, posB, conversation
     picks.push({ pick: "Half-time: Draw", conf: 56, risk: "medium", why: "Most matches tight at HT" });
   }
   
-  // AI CONVERSATION ADJUSTMENT
   if (conversation) {
     const conv = conversation.toLowerCase();
     if (conv.includes("attacking") || conv.includes("pressing") || conv.includes("fast") || conv.includes("aggressive")) {
@@ -178,7 +175,7 @@ function analyzeSingleMatch(teamA, teamB, formA, formB, posA, posB, conversation
 async function enhancePicksWithAI(env, picks, matchInfo, conversation) {
   if (!env.GEMINI_API_KEY || !conversation) return picks;
   
-  const prompt = "Match: " + matchInfo + "\nUser says: \"" + conversation + "\"\nCurrent picks: " + picks.map(p => p.pick + " (" + p.conf + "%)").join(", ") + "\n\nBased on user's observation, adjust the confidence values. Reply with EXACTLY 5 lines:\nPICK1: [same name]|[new conf 40-85]\nPICK2: [same name]|[new conf 40-85]\nPICK3: [same name]|[new conf 40-85]\nPICK4: [same name]|[new conf 40-85]\nPICK5: [same name]|[new conf 40-85]";
+  const prompt = "Match: " + matchInfo + "\nUser says: \"" + conversation + "\"\nCurrent picks: " + picks.map(p => p.pick + " (" + p.conf + "%)").join(", ") + "\n\nBased on user's observation, adjust confidence values. Reply with EXACTLY 5 lines:\nPICK1: [same name]|[new conf 40-85]\nPICK2: [same name]|[new conf 40-85]\nPICK3: [same name]|[new conf 40-85]\nPICK4: [same name]|[new conf 40-85]\nPICK5: [same name]|[new conf 40-85]";
   
   const ai = await callCore(env, prompt);
   if (!ai.ok) return picks;
@@ -196,12 +193,12 @@ async function enhancePicksWithAI(env, picks, matchInfo, conversation) {
   return picks;
 }
 
-async function savePrediction(env, matchLabel, platform, picks) {
+async function savePrediction(env, matchLabel, platform, picks, formA, formB, posA, posB) {
   const predId = "p_" + Date.now() + "_" + Math.random().toString(36).substr(2, 5);
   if (env.PICKS_KV) {
     await env.PICKS_KV.put(predId, JSON.stringify({
       id: predId, time: new Date().toISOString(), platform,
-      match: matchLabel, picks, status: "pending"
+      match: matchLabel, picks, formA, formB, posA, posB, status: "pending"
     }));
   }
   return predId;
@@ -224,26 +221,24 @@ async function updatePatterns(env, platform, formA, formB, posA, posB, outcome) 
   await env.PICKS_KV.put("patterns", JSON.stringify(patterns));
 }
 
-// ============================================
-// API ROUTES
-// ============================================
 async function apiAnalyze(request, env) {
   try {
     const form = await request.formData();
     const platform = form.get("platform") || "sportybet";
     const matchCount = parseInt(form.get("match_count")) || 1;
-    const conversation = form.get("conversation") || "";
     
     const results = [];
     
     for (let i = 1; i <= matchCount; i++) {
-      const teamA = form.get("m" + i + "_team_a") || "Team A";
-      const teamB = form.get("m" + i + "_team_b") || "Team B";
+      const teamA = form.get("m" + i + "_team_a");
+      const teamB = form.get("m" + i + "_team_b");
+      if (!teamA || !teamB) continue;
+      
       const formAStr = form.get("m" + i + "_form_a") || "W,D,L,W,D";
       const formBStr = form.get("m" + i + "_form_b") || "L,D,W,L,D";
       const posA = parseInt(form.get("m" + i + "_pos_a")) || 5;
       const posB = parseInt(form.get("m" + i + "_pos_b")) || 5;
-      const matchConv = form.get("m" + i + "_conv") || conversation;
+      const matchConv = form.get("m" + i + "_conv") || "";
       
       const formA = formAStr.toUpperCase().replace(/\s/g, '').split(',').filter(x => x);
       const formB = formBStr.toUpperCase().replace(/\s/g, '').split(',').filter(x => x);
@@ -254,23 +249,19 @@ async function apiAnalyze(request, env) {
       picks = await enhancePicksWithAI(env, picks, teamA + " vs " + teamB, matchConv);
       
       const matchLabel = teamA + " vs " + teamB;
-      const predId = await savePrediction(env, matchLabel, platform, picks);
+      const predId = await savePrediction(env, matchLabel, platform, picks, formA, formB, posA, posB);
       
       results.push({
         matchNum: i,
         teamA, teamB, platform,
         matchLabel: matchLabel,
         picks: picks,
-        predId: predId,
-        formA: formA,
-        formB: formB,
-        posA: posA,
-        posB: posB
+        predId: predId
       });
     }
     
     if (results.length === 0) {
-      return new Response(JSON.stringify({ ok: false, error: "No valid matches provided" }), { headers: { "Content-Type": "application/json" } });
+      return new Response(JSON.stringify({ ok: false, error: "Please fill in at least one match" }), { headers: { "Content-Type": "application/json" } });
     }
     
     return new Response(JSON.stringify({ ok: true, results: results }), { headers: { "Content-Type": "application/json" } });
@@ -306,7 +297,9 @@ async function apiResult(request, env) {
           pred.status = outcome;
           pred.outcomePick = pick;
           await env.PICKS_KV.put(predId, JSON.stringify(pred));
-          await updatePatterns(env, pred.platform, pred.formA, pred.formB, pred.posA, pred.posB, outcome);
+          if (pred.formA && pred.formB) {
+            await updatePatterns(env, pred.platform, pred.formA, pred.formB, pred.posA, pred.posB, outcome);
+          }
         }
       }
     }
@@ -343,7 +336,29 @@ const ICONS = {
 
 function nav(active) {
   const items = [["home", "HOME", ICONS.home], ["analyze", "ANALYZE", ICONS.analyze], ["ask", "ASK", ICONS.ask], ["dashboard", "STATS", ICONS.dashboard], ["history", "HISTORY", ICONS.history]];
-  return '<div class="nav">' + items.map(([k, v, icon]) => '<a href="/' + (k === 'home' ? '' : k) + '" class="' + (active === k ? 'active' : '') + '"><span class="icon">' + icon + '</span><span>' + v + '</span></a>').join("") + '<a href="/admin" class="admin-btn ' + (active === 'admin' ? 'active' : '') + '"><span class="icon">' + ICONS.lock + '</span></a></div>';
+  return '<div class="nav">' + items.map(function(item) { return '<a href="/' + (item[0] === 'home' ? '' : item[0]) + '" class="' + (active === item[0] ? 'active' : '') + '"><span class="icon">' + item[2] + '</span><span>' + item[1] + '</span></a>'; }).join("") + '<a href="/admin" class="admin-btn ' + (active === 'admin' ? 'active' : '') + '"><span class="icon">' + ICONS.lock + '</span></a></div>';
+}
+
+function buildMatchBlock(num) {
+  return '<h3 class="ct">MATCH ' + num + '</h3>' +
+    '<div class="row"><div><label>TEAM A</label><input id="m' + num + '_team_a" placeholder="e.g. Chelsea"></div><div><label>TEAM B</label><input id="m' + num + '_team_b" placeholder="e.g. Tottenham"></div></div>' +
+    '<div class="row"><div><label>TEAM A POS</label><input id="m' + num + '_pos_a" type="number" placeholder="3"></div><div><label>TEAM B POS</label><input id="m' + num + '_pos_b" type="number" placeholder="7"></div></div>' +
+    '<label>TEAM A FORM (LAST 5)</label>' +
+    '<div class="qt-row">' +
+      '<button type="button" class="qt" data-target="m' + num + '_form_a" data-v="W">WIN</button>' +
+      '<button type="button" class="qt" data-target="m' + num + '_form_a" data-v="D">DRAW</button>' +
+      '<button type="button" class="qt" data-target="m' + num + '_form_a" data-v="L">LOSS</button>' +
+    '</div>' +
+    '<input id="m' + num + '_form_a" placeholder="W,L,D,W,W">' +
+    '<label style="margin-top:10px">TEAM B FORM (LAST 5)</label>' +
+    '<div class="qt-row">' +
+      '<button type="button" class="qt" data-target="m' + num + '_form_b" data-v="W">WIN</button>' +
+      '<button type="button" class="qt" data-target="m' + num + '_form_b" data-v="D">DRAW</button>' +
+      '<button type="button" class="qt" data-target="m' + num + '_form_b" data-v="L">LOSS</button>' +
+    '</div>' +
+    '<input id="m' + num + '_form_b" placeholder="L,W,L,D,W">' +
+    '<label style="margin-top:10px">HOW IS THIS MATCH PLAYING? (OPTIONAL)</label>' +
+    '<textarea id="m' + num + '_conv" rows="2" placeholder="e.g. Team A attacking fast..."></textarea>';
 }
 
 const pages = {
@@ -361,7 +376,7 @@ const pages = {
     '<div class="head"><div class="logo">⚡ ANALYZE ⚡</div><div class="tag">UP TO 3 MATCHES AT ONCE</div></div>' +
     '<div class="card">' +
       '<label>PLATFORM</label>' +
-      '<select id="platform">' + PLATFORMS.virtual.map(p => '<option value="' + p.id + '">' + p.name + ' — ' + p.game + '</option>').join("") + '</select>' +
+      '<select id="platform">' + PLATFORMS.virtual.map(function(p) { return '<option value="' + p.id + '">' + p.name + ' — ' + p.game + '</option>'; }).join("") + '</select>' +
     '</div>' +
     '<div id="match1" class="card match-block"></div>' +
     '<div id="match2" class="card match-block"></div>' +
@@ -465,79 +480,146 @@ function layout(content, active) {
     'function rs(){c.width=window.innerWidth;c.height=window.innerHeight}rs();window.addEventListener("resize",rs);' +
     'const ch="01<>{}[]/\\\\$#@!%&*+=";' +
     'const fs=14;let cols=Math.floor(c.width/fs);let drops=Array(cols).fill(1);' +
-    'setInterval(()=>{x.fillStyle="rgba(0,0,0,0.05)";x.fillRect(0,0,c.width,c.height);x.fillStyle="#00ff88";x.font=fs+"px monospace";for(let i=0;i<drops.length;i++){const t=ch[Math.floor(Math.random()*ch.length)];x.fillText(t,i*fs,drops[i]*fs);if(drops[i]*fs>c.height&&Math.random()>.975)drops[i]=0;drops[i]++}},33);' +
+    'setInterval(function(){x.fillStyle="rgba(0,0,0,0.05)";x.fillRect(0,0,c.width,c.height);x.fillStyle="#00ff88";x.font=fs+"px monospace";for(let i=0;i<drops.length;i++){const t=ch[Math.floor(Math.random()*ch.length)];x.fillText(t,i*fs,drops[i]*fs);if(drops[i]*fs>c.height&&Math.random()>.975)drops[i]=0;drops[i]++}},33);' +
     '</script>' +
     '<script>' +
-    'function buildMatch(num){' +
-    'return ' +
-    "'<h3 class=\"ct\">MATCH \" + num + \"</h3>\" +" +
-    '\"<div class='row'><div><label>TEAM A</label><input id='m\" + num + \"_team_a' placeholder='e.g. Chelsea'></div><div><label>TEAM B</label><input id='m\" + num + \"_team_b' placeholder='e.g. Tottenham'></div></div>\" +' +
-    '\"<div class='row'><div><label>TEAM A POS</label><input id='m\" + num + \"_pos_a' type='number' placeholder='3'></div><div><label>TEAM B POS</label><input id='m\" + num + \"_pos_b' type='number' placeholder='7'></div></div>\" +' +
-    '\"<label>TEAM A FORM (LAST 5)</label><div class='qt-row'><button type=\\\"button\\\" class=\\\"qt\\\" data-target=\\\"m\" + num + \"_form_a\\\" data-v=\\\"W\\\">WIN</button><button type=\\\"button\\\" class=\\\"qt\\\" data-target=\\\"m\" + num + \"_form_b\\\" data-v=\\\"D\\\">DRAW</button><button type=\\\"button\\\" class=\\\"qt\\\" data-target=\\\"m\" + num + \"_form_c\\\" data-v=\\\"L\\\">LOSS</button></div><input id='m\" + num + \"_form_a' placeholder='W,L,D,W,W'>\" +' +
-    '\"<label>TEAM B FORM (LAST 5)</label><div class='qt-row'><button type=\\\"button\\\" class=\\\"qt\\\" data-target=\\\"m\" + num + \"_form_b\\\" data-v=\\\"W\\\">WIN</button><button type=\\\"button\\\" class=\\\"qt\\\" data-target=\\\"m\" + num + \"_form_d\\\" data-v=\\\"D\\\">DRAW</button><button type=\\\"button\\\" class=\\\"qt\\\" data-target=\\\"m\" + num + \"_form_e\\\" data-v=\\\"L\\\">LOSS</button></div><input id='m\" + num + \"_form_b' placeholder='L,W,L,D,W'>\" +' +
-    '\"<label>HOW IS THIS MATCH PLAYING? (OPTIONAL)</label><textarea id='m\" + num + \"_conv' rows=\\\"2\\\" placeholder='e.g. Team A attacking fast...'></textarea>\";' +
+    'if(document.getElementById("match1")){' +
+      'document.getElementById("match1").innerHTML=buildMatchBlock(1);' +
+      'document.getElementById("match2").innerHTML=buildMatchBlock(2);' +
+      'document.getElementById("match3").innerHTML=buildMatchBlock(3);' +
+      'document.querySelectorAll(".qt").forEach(function(b){b.addEventListener("click",function(){' +
+        'const target=document.getElementById(b.dataset.target);' +
+        'if(!target)return;' +
+        'const cur=target.value?target.value.split(","):[];' +
+        'if(cur.length>=5)return;' +
+        'cur.push(b.dataset.v);' +
+        'target.value=cur.join(",");' +
+      '})});' +
     '}' +
-    'document.getElementById("match1").innerHTML=buildMatch(1);' +
-    'document.getElementById("match2").innerHTML=buildMatch(2);' +
-    'document.getElementById("match3").innerHTML=buildMatch(3);' +
-    'document.querySelectorAll(".qt").forEach(b=>b.addEventListener("click",()=>{' +
-    'const target=document.getElementById(b.dataset.target);' +
-    'if(!target)return;' +
-    'const cur=target.value?target.value.split(","):[];' +
-    'if(cur.length>=5){return}' +
-    'cur.push(b.dataset.v);' +
-    'target.value=cur.join(",");' +
-    '}));' +
-    'async function loadStats(){try{const r=await fetch("/api/stats");const s=await r.json();const rate=s.total>0?Math.round(s.wins/s.total*1000)/10:0;const h=document.getElementById("h-total");if(h)h.textContent=s.total;const hr=document.getElementById("h-rate");if(hr)hr.textContent=rate+"%";const dt=document.getElementById("d-total");if(dt)dt.textContent=s.total;const dw=document.getElementById("d-wins");if(dw)dw.textContent=s.wins;const dt2=document.getElementById("d-today");if(dt2)dt2.textContent=s.todayTotal||0;const dr=document.getElementById("d-rate");if(dr)dr.textContent=rate+"%";if(s.total>0){const r2=await fetch("/api/predictions");const p=await r2.json();const recent=p.slice(0,10).filter(x=>x.status==="win"||x.status==="lose");let cur=0,type=recent[0]?recent[0].status:"none";for(const x of recent){if(x.status===type)cur++;else break;}const hs=document.getElementById("h-streak");if(hs)hs.textContent=cur+(type==="win"?"W":type==="lose"?"L":"");}}catch(e){}}' +
+    'async function loadStats(){' +
+      'try{' +
+        'const r=await fetch("/api/stats");' +
+        'const s=await r.json();' +
+        'const rate=s.total>0?Math.round(s.wins/s.total*1000)/10:0;' +
+        'const h=document.getElementById("h-total");if(h)h.textContent=s.total;' +
+        'const hr=document.getElementById("h-rate");if(hr)hr.textContent=rate+"%";' +
+        'const dt=document.getElementById("d-total");if(dt)dt.textContent=s.total;' +
+        'const dw=document.getElementById("d-wins");if(dw)dw.textContent=s.wins;' +
+        'const dt2=document.getElementById("d-today");if(dt2)dt2.textContent=s.todayTotal||0;' +
+        'const dr=document.getElementById("d-rate");if(dr)dr.textContent=rate+"%";' +
+        'if(s.total>0){' +
+          'const r2=await fetch("/api/predictions");' +
+          'const p=await r2.json();' +
+          'const recent=p.slice(0,10).filter(function(x){return x.status==="win"||x.status==="lose"});' +
+          'let cur=0,type=recent[0]?recent[0].status:"none";' +
+          'for(const x of recent){if(x.status===type)cur++;else break;}' +
+          'const hs=document.getElementById("h-streak");' +
+          'if(hs)hs.textContent=cur+(type==="win"?"W":type==="lose"?"L":"");' +
+        '}' +
+      '}catch(e){}' +
+    '}' +
     'loadStats();' +
-    'document.getElementById("analyzeBtn")?.addEventListener("click",async()=>{' +
-    'const fd=new FormData();' +
-    'fd.append("platform",document.getElementById("platform").value);' +
-    'fd.append("match_count","3");' +
-    'for(let i=1;i<=3;i++){' +
-    'const tA=document.getElementById("m"+i+"_team_a");' +
-    'if(tA&&tA.value){' +
-    'fd.append("m"+i+"_team_a",tA.value);' +
-    'fd.append("m"+i+"_team_b",document.getElementById("m"+i+"_team_b").value);' +
-    'fd.append("m"+i+"_pos_a",document.getElementById("m"+i+"_pos_a").value);' +
-    'fd.append("m"+i+"_pos_b",document.getElementById("m"+i+"_pos_b").value);' +
-    'fd.append("m"+i+"_form_a",document.getElementById("m"+i+"_form_a").value);' +
-    'fd.append("m"+i+"_form_b",document.getElementById("m"+i+"_form_b").value);' +
-    'fd.append("m"+i+"_conv",document.getElementById("m"+i+"_conv").value);' +
-    '}}' +
-    'const r=await fetch("/api/analyze",{method:"POST",body:fd});' +
-    'const d=await r.json();' +
-    'if(d.ok&&d.results){' +
-    'const res=document.getElementById("result");' +
-    'let html="<div class=\\\"head\\\"><div class=\\\"logo\\\" style=\\\"font-size:20px\\\">⚡ RESULTS ⚡</div></div>";' +
-    'd.results.forEach(match=>{' +
-    'html+="<div class=\\\"match-title\\\">"+match.teamA+" <span class=\\\"hl\\\">VS</span> "+match.teamB+"</div>";' +
-    'html+="<div class=\\\"match-sub\\\">"+match.platform.toUpperCase()+"</div>";' +
-    'match.picks.forEach((p,i)=>{"' +
-    'html+="<div class=\\"pick-card risk-"+p.risk+"><div class=\\"pick-header"><span class=\\"tag2\\">PICK #"+(i+1)+"</span><span class=\\"tag-risk risk-"+p.risk+"\\">"+p.risk.toUpperCase()+"</span></div><div class=\\"pick-name\\">"+p.pick+"</div><div class=\\"pick-conf\\">"+p.conf+"%</div><div class=\\"pick-why\\">"+p.why+"</div><div class=\\"pick-btns\\"><form><input type=\\"hidden\\" name=\\"pid\\" value=\\""+match.predId+"\\"><input type=\\"hidden\\" name=\\"p\\" value=\\""+p.pick+"\\"><button type=\\"submit\\" name=\\"o\\" value=\\"win\\" class=\\"btn-win\\">✓ WIN</button><button type=\\"submit\\" name=\\"o\\" value=\\"lose\\" class=\\"btn-lose\\">✗ LOSE</button></form></div></div>";' +
-    '});' +
-    '});' +
-    'html+="<a href=\\"/analyze\\" class=\\"btn\\">NEW ANALYSIS</a>";' +
-    'res.innerHTML=html;' +
-    'res.querySelectorAll("form").forEach(f=>f.addEventListener("submit",async e=>{' +
-    'e.preventDefault();' +
-    'const fd=new FormData();' +
-    'fd.append("predId",f.querySelector("[name=pid]").value);' +
-    'fd.append("pick",f.querySelector("[name=p]").value);' +
-    'fd.append("outcome",e.submitter.value);' +
-    'await fetch("/api/result",{method:"POST",body:fd});' +
-    'alert("Logged! System learned.");' +
-    'loadStats();' +
-    '}));' +
-    'res.scrollIntoView({behavior:"smooth"});' +
-    '}else{alert("Error: "+(d.error||"unknown"))}' +
-    '});' +
-    'async function loadHistory(){try{const r=await fetch("/api/predictions");const p=await r.json();const h=document.getElementById("hist");if(!h)return;if(!p.length){h.innerHTML="No predictions yet.";return}' +
-    'h.innerHTML=p.map(x=>"<div style=\\"padding:10px;border-bottom:1px solid #222\\"><div style=\\"display:flex;justify-content:space-between\\"><b class=\\"hl\\">"+(x.match||"Match")+"</b><span style=\\"font-size:10px;color:var(--gray)\\">"+new Date(x.time).toLocaleString()+"</span></div><div style=\\"font-size:10px;margin-top:3px\\">"+(x.status==="win"?"<span class=\\"hl\\">✓ WIN</span>":x.status==="lose"?"<span class=\\"warn-text\\">✗ LOSE</span>":"<span class=\\"muted\\">PENDING</span>")+"</div></div>").join("");}catch(e){}}loadHistory();' +
-    'async function loadPatterns(){try{const r=await fetch("/api/patterns");const p=await r.json();const list=document.getElementById("patterns-list");if(!list)return;const rules=p.rules||{};const active=Object.entries(rules).filter(([k,v])=>v.total>=10);if(!active.length){list.innerHTML="<span>Need 10+ results</span>";return}' +
-    'list.innerHTML=active.slice(0,10).map(([key,r])=>"<div style=\\"background:rgba(0,255,136,.05);border-left:3px solid var(--green);padding:10px;margin:6px 0;border-radius:6px\\"><b class=\\"hl\\">"+key.replace(/_/g," ")+"</b><br><span class=\\"muted\\">"+r.hits+"/"+r.total+" = "+r.confidence+"%</span></div>").join("");}catch(e){}}loadPatterns();' +
-    'document.getElementById("askBtn")?.addEventListener("click",async()=>{const q=document.getElementById("aiQuestion").value.trim();if(!q){alert("Ask a question");return}const fd=new FormData();fd.append("question",q);const r=await fetch("/api/ask",{method:"POST",body:fd});const d=await r.json();if(d.ok){document.getElementById("aiResponse").style.display="block";document.getElementById("aiText").textContent=d.reply;}else alert("Error: "+d.error);});' +
-    'async function adminLogin(){const p=document.getElementById("pass").value;const fd=new FormData();fd.append("password",p);const r=await fetch("/api/admin/login",{method:"POST",body:fd});const d=await r.json();if(d.ok){document.getElementById("login-card").style.display="none";document.getElementById("panel").style.display="block";const sr=await fetch("/api/stats");const ss=await sr.json();document.getElementById("a-stats").innerHTML="Total: "+ss.total+" | Wins: "+ss.wins;}else alert("Wrong password");}' +
+    'const analyzeBtn=document.getElementById("analyzeBtn");' +
+    'if(analyzeBtn){analyzeBtn.addEventListener("click",async function(){' +
+      'const fd=new FormData();' +
+      'fd.append("platform",document.getElementById("platform").value);' +
+      'fd.append("match_count","3");' +
+      'for(let i=1;i<=3;i++){' +
+        'const tA=document.getElementById("m"+i+"_team_a");' +
+        'if(tA&&tA.value){' +
+          'fd.append("m"+i+"_team_a",tA.value);' +
+          'fd.append("m"+i+"_team_b",document.getElementById("m"+i+"_team_b").value);' +
+          'fd.append("m"+i+"_pos_a",document.getElementById("m"+i+"_pos_a").value);' +
+          'fd.append("m"+i+"_pos_b",document.getElementById("m"+i+"_pos_b").value);' +
+          'fd.append("m"+i+"_form_a",document.getElementById("m"+i+"_form_a").value);' +
+          'fd.append("m"+i+"_form_b",document.getElementById("m"+i+"_form_b").value);' +
+          'fd.append("m"+i+"_conv",document.getElementById("m"+i+"_conv").value);' +
+        '}' +
+      '}' +
+      'analyzeBtn.disabled=true;' +
+      'analyzeBtn.textContent="ANALYZING...";' +
+      'try{' +
+        'const r=await fetch("/api/analyze",{method:"POST",body:fd});' +
+        'const d=await r.json();' +
+        'if(d.ok&&d.results){' +
+          'const res=document.getElementById("result");' +
+          'let html="<div class=\\"head\\"><div class=\\"logo\\" style=\\"font-size:20px\\">⚡ RESULTS ⚡</div></div>";' +
+          'd.results.forEach(function(match){' +
+            'html+="<div class=\\"match-title\\">"+match.teamA+" <span class=\\"hl\\">VS</span> "+match.teamB+"</div>";' +
+            'html+="<div class=\\"match-sub\\">"+match.platform.toUpperCase()+"</div>";' +
+            'match.picks.forEach(function(p,i){' +
+              'html+="<div class=\\"pick-card risk-"+p.risk+"\\"><div class=\\"pick-header\\"><span class=\\"tag2\\">PICK #"+(i+1)+"</span><span class=\\"tag-risk risk-"+p.risk+"\\">"+p.risk.toUpperCase()+"</span></div>";' +
+              'html+="<div class=\\"pick-name\\">"+p.pick+"</div>";' +
+              'html+="<div class=\\"pick-conf\\">"+p.conf+"%</div>";' +
+              'html+="<div class=\\"pick-why\\">"+p.why+"</div>";' +
+              'html+="<div class=\\"pick-btns\\"><form><input type=\\"hidden\\" name=\\"pid\\" value=\\""+match.predId+"\\"><input type=\\"hidden\\" name=\\"p\\" value=\\""+p.pick+"\\"><button type=\\"submit\\" name=\\"o\\" value=\\"win\\" class=\\"btn-win\\">WIN</button><button type=\\"submit\\" name=\\"o\\" value=\\"lose\\" class=\\"btn-lose\\">LOSE</button></form></div></div>";' +
+            '});' +
+          '});' +
+          'html+="<a href=\\"/analyze\\" class=\\"btn\\">NEW ANALYSIS</a>";' +
+          'res.innerHTML=html;' +
+          'res.querySelectorAll("form").forEach(function(f){f.addEventListener("submit",async function(e){' +
+            'e.preventDefault();' +
+            'const fd=new FormData();' +
+            'fd.append("predId",f.querySelector("[name=pid]").value);' +
+            'fd.append("pick",f.querySelector("[name=p]").value);' +
+            'fd.append("outcome",e.submitter.value);' +
+            'await fetch("/api/result",{method:"POST",body:fd});' +
+            'alert("Logged!");' +
+            'loadStats();' +
+          '})});' +
+          'res.scrollIntoView({behavior:"smooth"});' +
+        '}else{alert("Error: "+(d.error||"unknown"))}' +
+      '}catch(e){alert("Error: "+e.message)}' +
+      'analyzeBtn.disabled=false;' +
+      'analyzeBtn.textContent="⚡ ANALYZE ALL MATCHES ⚡";' +
+    '})}' +
+    'async function loadHistory(){' +
+      'try{' +
+        'const r=await fetch("/api/predictions");' +
+        'const p=await r.json();' +
+        'const h=document.getElementById("hist");' +
+        'if(!h)return;' +
+        'if(!p.length){h.innerHTML="No predictions yet.";return}' +
+        'h.innerHTML=p.map(function(x){return "<div style=\\"padding:10px;border-bottom:1px solid #222\\"><div style=\\"display:flex;justify-content:space-between\\"><b class=\\"hl\\">"+(x.match||"Match")+"</b><span style=\\"font-size:10px;color:var(--gray)\\">"+new Date(x.time).toLocaleString()+"</span></div><div style=\\"font-size:10px;margin-top:3px\\">"+(x.status==="win"?"<span class=\\"hl\\">WIN</span>":x.status==="lose"?"<span class=\\"warn-text\\">LOSE</span>":"<span class=\\"muted\\">PENDING</span>")+"</div></div>";}).join("");' +
+      '}catch(e){}' +
+    '}' +
+    'loadHistory();' +
+    'async function loadPatterns(){' +
+      'try{' +
+        'const r=await fetch("/api/patterns");' +
+        'const p=await r.json();' +
+        'const list=document.getElementById("patterns-list");' +
+        'if(!list)return;' +
+        'const rules=p.rules||{};' +
+        'const active=Object.entries(rules).filter(function(entry){return entry[1].total>=10;});' +
+        'if(!active.length){list.innerHTML="Need 10+ results";return}' +
+        'list.innerHTML=active.slice(0,10).map(function(entry){return "<div style=\\"background:rgba(0,255,136,.05);border-left:3px solid var(--green);padding:10px;margin:6px 0;border-radius:6px\\"><b class=\\"hl\\">"+entry[0].replace(/_/g," ")+"</b><br><span class=\\"muted\\">"+entry[1].hits+"/"+entry[1].total+" = "+entry[1].confidence+"%</span></div>";}).join("");' +
+      '}catch(e){}' +
+    '}' +
+    'loadPatterns();' +
+    'const askBtn=document.getElementById("askBtn");' +
+    'if(askBtn){askBtn.addEventListener("click",async function(){' +
+      'const q=document.getElementById("aiQuestion").value.trim();' +
+      'if(!q){alert("Ask a question");return}' +
+      'const fd=new FormData();fd.append("question",q);' +
+      'const r=await fetch("/api/ask",{method:"POST",body:fd});' +
+      'const d=await r.json();' +
+      'if(d.ok){document.getElementById("aiResponse").style.display="block";document.getElementById("aiText").textContent=d.reply;}' +
+      'else alert("Error: "+d.error);' +
+    '})}' +
+    'async function adminLogin(){' +
+      'const p=document.getElementById("pass").value;' +
+      'const fd=new FormData();fd.append("password",p);' +
+      'const r=await fetch("/api/admin/login",{method:"POST",body:fd});' +
+      'const d=await r.json();' +
+      'if(d.ok){' +
+        'document.getElementById("login-card").style.display="none";' +
+        'document.getElementById("panel").style.display="block";' +
+        'const sr=await fetch("/api/stats");' +
+        'const ss=await sr.json();' +
+        'document.getElementById("a-stats").innerHTML="Total: "+ss.total+" | Wins: "+ss.wins;' +
+      '}else alert("Wrong password");' +
+    '}' +
     '</script>' +
     '</body></html>';
 }
