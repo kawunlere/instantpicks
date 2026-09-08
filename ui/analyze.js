@@ -1,4 +1,3 @@
-// ANALYZE PAGE - With all the new inputs
 import { getNav, buildPage } from "./shared.js";
 import { getAllPlatforms } from "../engines/platforms.js";
 
@@ -7,165 +6,99 @@ export function renderAnalyze() {
   const platforms = getAllPlatforms();
   const platformOptions = platforms.map(p => '<option value="' + p.id + '">' + p.name + ' — ' + p.game + '</option>').join("");
   
-  const body = 
-    '<div class="head"><div class="logo">⚡ ANALYZE ⚡</div><div class="tag">SMART MATCH ANALYSIS</div></div>' +
-    
-    '<div class="card">' +
-      '<label>PLATFORM</label>' +
-      '<select id="platform">' + platformOptions + '</select>' +
-    '</div>' +
-    
-    '<div class="card">' +
-      '<h3 class="ct">MATCH TEAMS</h3>' +
-      '<div class="row"><div><label>TEAM A NAME</label><input id="team_a" placeholder="e.g. Chelsea"></div><div><label>TEAM B NAME</label><input id="team_b" placeholder="e.g. Tottenham"></div></div>' +
-      '<div class="section-title">TEAM SIZE (Matters!)</div>' +
-      '<div class="row">' +
-        '<div><label>TEAM A SIZE</label><select id="team_a_size"><option value="MEDIUM">MEDIUM</option><option value="BIG">BIG TEAM</option><option value="SMALL">SMALL TEAM</option></select></div>' +
-        '<div><label>TEAM B SIZE</label><select id="team_b_size"><option value="MEDIUM">MEDIUM</option><option value="BIG">BIG TEAM</option><option value="SMALL">SMALL TEAM</option></select></div>' +
-      '</div>' +
-      '<div class="section-title">WHO IS HOME?</div>' +
-      '<div class="row"><div><label>HOME/AWAY</label><select id="home_team"><option value="A">TEAM A IS HOME</option><option value="B">TEAM B IS HOME</option><option value="NEUTRAL">NEUTRAL</option></select></div></div>' +
-      '<div class="section-title">TABLE POSITION</div>' +
-      '<div class="row"><div><label>TEAM A POS</label><input id="pos_a" type="number" placeholder="3"></div><div><label>TEAM B POS</label><input id="pos_b" type="number" placeholder="7"></div></div>' +
-    '</div>' +
-    
-    '<div class="card">' +
-      '<h3 class="ct">ODDS (FROM BOOKMAKER)</h3>' +
-      '<div class="row">' +
-        '<div><label>HOME WIN ODDS</label><input id="odds_home" type="number" step="0.01" placeholder="1.90"></div>' +
-        '<div><label>DRAW ODDS</label><input id="odds_draw" type="number" step="0.01" placeholder="3.40"></div>' +
-        '<div><label>AWAY WIN ODDS</label><input id="odds_away" type="number" step="0.01" placeholder="4.50"></div>' +
-      '</div>' +
-    '</div>' +
-    
-    '<div class="card">' +
-      '<h3 class="ct">TEAM A FORM (LAST 5)</h3>' +
-      '<div class="qt-row">' +
-        '<button type="button" class="qt" data-t="form_a" data-v="W">W</button>' +
-        '<button type="button" class="qt" data-t="form_a" data-v="D">D</button>' +
-        '<button type="button" class="qt" data-t="form_a" data-v="L">L</button>' +
-      '</div>' +
-      '<input id="form_a" placeholder="W,L,D,W,W">' +
-    '</div>' +
-    
-    '<div class="card">' +
-      '<h3 class="ct">TEAM B FORM (LAST 5)</h3>' +
-      '<div class="qt-row">' +
-        '<button type="button" class="qt" data-t="form_b" data-v="W">W</button>' +
-        '<button type="button" class="qt" data-t="form_b" data-v="D">D</button>' +
-        '<button type="button" class="qt" data-t="form_b" data-v="L">L</button>' +
-      '</div>' +
-      '<input id="form_b" placeholder="L,W,L,D,W">' +
-    '</div>' +
-    
-    '<div class="card">' +
-      '<h3 class="ct">HEAD-TO-HEAD</h3>' +
-      '<div class="row"><div><label>TOTAL MEETINGS</label><input id="h2h_meetings" type="number" placeholder="10"></div><div><label>AVG GOALS</label><input id="h2h_avg_goals" type="number" step="0.1" placeholder="2.5"></div></div>' +
-      '<div class="row">' +
-        '<div><label>TEAM A H2H WINS</label><input id="h2h_home" type="number" placeholder="4"></div>' +
-        '<div><label>H2H DRAWS</label><input id="h2h_draw" type="number" placeholder="3"></div>' +
-        '<div><label>TEAM B H2H WINS</label><input id="h2h_away" type="number" placeholder="3"></div>' +
-      '</div>' +
-    '</div>' +
-    
-    '<div class="card">' +
-      '<h3 class="ct">RECENT SCORES (OPTIONAL)</h3>' +
-      '<p class="muted" style="margin-bottom:10px">If you know last scores, enter them. Helps predict correct score.</p>' +
-      '<div class="row">' +
-        '<div><label>TEAM A LAST 5 SCORES</label><input id="scores_a" placeholder="2-1,0-0,3-1,1-2,2-0"></div>' +
-        '<div><label>TEAM B LAST 5 SCORES</label><input id="scores_b" placeholder="1-1,0-2,2-2,1-0,0-1"></div>' +
-      '</div>' +
-    '</div>' +
-    
-    '<div class="card">' +
-      '<h3 class="ct">HOW IS THE MATCH PLAYING? (OPTIONAL)</h3>' +
-      '<textarea id="conv" rows="2" placeholder="e.g. Team A pressing high, Team B defensive..."></textarea>' +
-      '<button class="btn" id="goBtn">⚡ ANALYZE ⚡</button>' +
-    '</div>' +
-    
+  const buildMatch = (num) => `
+    <div class="card">
+      <h3 class="ct">MATCH ${num}</h3>
+      <div class="row">
+        <div><label>TEAM A</label><input id="m${num}_team_a" placeholder="e.g. Chelsea"></div>
+        <div><label>TEAM B</label><input id="m${num}_team_b" placeholder="e.g. Tottenham"></div>
+      </div>
+      <div class="row">
+        <div><label>TEAM A POS</label><input id="m${num}_pos_a" type="number" placeholder="3"></div>
+        <div><label>TEAM B POS</label><input id="m${num}_pos_b" type="number" placeholder="7"></div>
+      </div>
+      <label>TEAM A FORM (tap W/D/L buttons)</label>
+      <div style="display:flex;gap:5px;margin:8px 0">
+        <button type="button" onclick="addForm(${num},'a','W')" style="flex:1;padding:10px;background:rgba(0,0,0,.5);color:#fff;border:1px solid #333;border-radius:6px;cursor:pointer;font-family:inherit;font-weight:700">W</button>
+        <button type="button" onclick="addForm(${num},'a','D')" style="flex:1;padding:10px;background:rgba(0,0,0,.5);color:#fff;border:1px solid #333;border-radius:6px;cursor:pointer;font-family:inherit;font-weight:700">D</button>
+        <button type="button" onclick="addForm(${num},'a','L')" style="flex:1;padding:10px;background:rgba(0,0,0,.5);color:#fff;border:1px solid #333;border-radius:6px;cursor:pointer;font-family:inherit;font-weight:700">L</button>
+      </div>
+      <input id="m${num}_form_a" placeholder="W,L,D,W,W">
+      <label>TEAM B FORM</label>
+      <div style="display:flex;gap:5px;margin:8px 0">
+        <button type="button" onclick="addForm(${num},'b','W')" style="flex:1;padding:10px;background:rgba(0,0,0,.5);color:#fff;border:1px solid #333;border-radius:6px;cursor:pointer;font-family:inherit;font-weight:700">W</button>
+        <button type="button" onclick="addForm(${num},'b','D')" style="flex:1;padding:10px;background:rgba(0,0,0,.5);color:#fff;border:1px solid #333;border-radius:6px;cursor:pointer;font-family:inherit;font-weight:700">D</button>
+        <button type="button" onclick="addForm(${num},'b','L')" style="flex:1;padding:10px;background:rgba(0,0,0,.5);color:#fff;border:1px solid #333;border-radius:6px;cursor:pointer;font-family:inherit;font-weight:700">L</button>
+      </div>
+      <input id="m${num}_form_b" placeholder="L,W,L,D,W">
+    </div>`;
+
+  const body = '<div class="head"><div class="logo">⚡ ANALYZE ⚡</div><div class="tag">UP TO 3 MATCHES (ACCUMULATOR)</div></div>' +
+    '<div class="card"><label>PLATFORM</label><select id="platform"><option value="">' + platformOptions + '</select></div>' +
+    buildMatch(1) + buildMatch(2) + buildMatch(3) +
+    '<button class="btn" id="goBtn">⚡ ANALYZE ALL 3 MATCHES ⚡</button>' +
     '<div id="result"></div>' +
-    
     '<script>' +
-    'document.querySelectorAll(".qt").forEach(function(b){b.addEventListener("click",function(){' +
-      'var t=document.getElementById(b.dataset.t);' +
-      'var c=t.value?t.value.split(","):[];' +
-      'if(c.length>=5)return;' +
-      'c.push(b.dataset.v);' +
-      't.value=c.join(",");' +
-    '})});' +
-    
-    'var goBtn=document.getElementById("goBtn");' +
-    'if(goBtn){goBtn.addEventListener("click",async function(){' +
-      'var fd=new FormData();' +
-      'fd.append("platform",document.getElementById("platform").value);' +
-      'fd.append("team_a",document.getElementById("team_a").value);' +
-      'fd.append("team_b",document.getElementById("team_b").value);' +
-      'fd.append("team_a_size",document.getElementById("team_a_size").value);' +
-      'fd.append("team_b_size",document.getElementById("team_b_size").value);' +
-      'fd.append("home_team",document.getElementById("home_team").value);' +
-      'fd.append("pos_a",document.getElementById("pos_a").value);' +
-      'fd.append("pos_b",document.getElementById("pos_b").value);' +
-      'fd.append("odds_home",document.getElementById("odds_home").value);' +
-      'fd.append("odds_draw",document.getElementById("odds_draw").value);' +
-      'fd.append("odds_away",document.getElementById("odds_away").value);' +
-      'fd.append("form_a",document.getElementById("form_a").value);' +
-      'fd.append("form_b",document.getElementById("form_b").value);' +
-      'fd.append("h2h_meetings",document.getElementById("h2h_meetings").value);' +
-      'fd.append("h2h_avg_goals",document.getElementById("h2h_avg_goals").value);' +
-      'fd.append("h2h_home",document.getElementById("h2h_home").value);' +
-      'fd.append("h2h_draw",document.getElementById("h2h_draw").value);' +
-      'fd.append("h2h_away",document.getElementById("h2h_away").value);' +
-      'fd.append("scores_a",document.getElementById("scores_a").value);' +
-      'fd.append("scores_b",document.getElementById("scores_b").value);' +
-      'fd.append("conversation",document.getElementById("conv").value);' +
-      'goBtn.disabled=true;goBtn.textContent="ANALYZING...";' +
-      'try{' +
-        'var r=await fetch("/api/analyze",{method:"POST",body:fd});' +
-        'var d=await r.json();' +
-        'if(d.ok){' +
-          'var res=document.getElementById("result");' +
-          'var html="<div class=\\"mt\\">"+d.teamA+" <span class=\\"hl\\">VS</span> "+d.teamB+"</div>";' +
-          'html+="<div class=\\"ms\\">"+d.platform.toUpperCase()+"</div>";' +
-          'if(d.streak&&d.streak.warning){html+="<div class=\\"warning\\">"+d.streak.warning+"</div>";}' +
-          'html+="<div class=\\"card\\"><h3 class=\\"ct\\">TOP 6 PICKS</h3>";' +
-          'd.picks.forEach(function(p,i){' +
-            'var cat=p.category||"pick";' +
-            'var risk="med";' +
-            'if(cat==="goals_over"||cat==="goals_under"||cat==="double_chance")risk="low";' +
-            'else if(cat==="correct_score"||cat==="combo")risk="high";' +
-            'var rc="r-"+(risk==="low"?"low":risk==="med"?"med":"high");' +
-            'html+="<div class=\\"pc "+rc+"\\"><div class=\\"ph\\"><span class=\\"tg\\">PICK #"+(i+1)+"</span><span class=\\"tr "+rc+"\\">"+risk.toUpperCase()+"</span></div>";' +
-            'html+="<div class=\\"pn\\">"+p.name+"</div>";' +
-            'html+="<div class=\\"pc2\\">"+p.conf+"%</div>";' +
-            'html+="<div class=\\"pw\\">Category: "+cat.replace(/_/g," ")+"</div>";' +
-            'html+="<div class=\\"pb\\"><form><input type=\\"hidden\\" name=\\"pid\\" value=\\""+d.predId+"\\"><input type=\\"hidden\\" name=\\"p\\" value=\\""+p.name+"\\"><button type=\\"submit\\" name=\\"o\\" value=\\"win\\" class=\\"bw\\">WIN</button><button type=\\"submit\\" name=\\"o\\" value=\\"lose\\" class=\\"bl\\">LOSE</button></form></div></div>";' +
-          '});' +
-          'html+="</div>";' +
-          'if(d.allOptions){' +
-            'html+="<div class=\\"card\\"><h3 class=\\"ct\\">ALL "+d.allOptions.length+" OPTIONS (Sorted by confidence)</h3>";' +
-            'html+="<div style=\\"max-height:400px;overflow-y:auto\\">";' +
-            'd.allOptions.forEach(function(p){' +
-              'html+="<div class=\\"opt-list\\"><div class=\\"opt-name\\">"+p.name+"</div><div class=\\"opt-cat\\">"+(p.category||"").replace(/_/g," ")+"</div><div class=\\"opt-conf\\">"+p.conf+"%</div></div>";' +
-            '});' +
-            'html+="</div></div>";' +
-          '}' +
-          'html+="<a href=\\"/analyze\\" class=\\"btn\\">NEW ANALYSIS</a>";' +
-          'res.innerHTML=html;' +
-          'res.querySelectorAll("form").forEach(function(f){f.addEventListener("submit",async function(e){' +
-            'e.preventDefault();' +
-            'var fd=new FormData();' +
-            'fd.append("predId",f.querySelector("[name=pid]").value);' +
-            'fd.append("pick",f.querySelector("[name=p]").value);' +
-            'fd.append("outcome",e.submitter.value);' +
-            'await fetch("/api/result",{method:"POST",body:fd});' +
-            'alert("Logged! System learned.");' +
-          '})});' +
-          'res.scrollIntoView({behavior:"smooth"});' +
-        '}else{alert("Error: "+(d.error||"unknown"))}' +
-      '}catch(e){alert("Error: "+e.message)}' +
-      'goBtn.disabled=false;goBtn.textContent="⚡ ANALYZE ⚡";' +
-    '})}' +
+    'function addForm(num,team,val){' +
+      'var id="m"+num+"_form_"+team;' +
+      'var el=document.getElementById(id);' +
+      'var cur=el.value?el.value.split(","):[];' +
+      'if(cur.length>=5)return;' +
+      'cur.push(val);' +
+      'el.value=cur.join(",");' +
+    '}' +
+    'document.getElementById("goBtn").addEventListener("click",async function(){' +
+      'this.disabled=true;this.textContent="ANALYZING...";' +
+      'var results=[];' +
+      'for(var i=1;i<=3;i++){' +
+        'var ta=document.getElementById("m"+i+"_team_a");' +
+        'if(!ta||!ta.value)continue;' +
+        'var fd=new FormData();' +
+        'fd.append("platform",document.getElementById("platform").value);' +
+        'fd.append("team_a",ta.value);' +
+        'fd.append("team_b",document.getElementById("m"+i+"_team_b").value);' +
+        'fd.append("form_a",document.getElementById("m"+i+"_form_a").value);' +
+        'fd.append("form_b",document.getElementById("m"+i+"_form_b").value);' +
+        'fd.append("pos_a",document.getElementById("m"+i+"_pos_a").value);' +
+        'fd.append("pos_b",document.getElementById("m"+i+"_pos_b").value);' +
+        'try{' +
+          'var r=await fetch("/api/analyze",{method:"POST",body:fd});' +
+          'var d=await r.json();' +
+          'if(d.ok)results.push(d);' +
+        '}catch(e){}' +
+      '}' +
+      'this.disabled=false;this.textContent="⚡ ANALYZE ALL 3 MATCHES ⚡";' +
+      'if(!results.length){alert("Please fill in at least one match");return;}' +
+      'var html="<div class=\\"head\\"><div class=\\"logo\\" style=\\"font-size:20px\\">⚡ RESULTS ⚡</div></div>";' +
+      'var totalConf=1;' +
+      'results.forEach(function(d){' +
+        'html+="<div style=\\"text-align:center;font-size:17px;font-weight:800;margin:15px 0 5px;color:#00ff88\\">"+d.teamA+" VS "+d.teamB+"</div>";' +
+        'html+="<div style=\\"text-align:center;font-size:9px;color:#888;letter-spacing:2px;margin-bottom:10px\\">"+d.platform.toUpperCase()+"</div>";' +
+        'if(d.picks[0])totalConf*=d.picks[0].conf/100;' +
+        'd.picks.forEach(function(p,i){' +
+          'var risk="med";' +
+          'if(p.category==="goals_over"||p.category==="goals_under")risk="low";' +
+          'else if(p.category==="correct_score"||p.category==="combo")risk="high";' +
+          'var rc="r-"+risk;' +
+          'html+="<div class=\\"card\\" style=\\"border-left:4px solid #00ff88;padding:14px;margin:10px 0;border-radius:8px\\"><div style=\\"display:flex;justify-content:space-between;align-items:center\\"><span style=\\"background:#00ff88;color:#000;padding:3px 10px;border-radius:15px;font-size:9px;font-weight:900\\">PICK #"+(i+1)+"</span><span style=\\"padding:3px 10px;border-radius:15px;font-size:9px;font-weight:900;background:#332200;color:#ffaa00;border:1px solid #ffaa00\\">"+risk.toUpperCase()+"</span></div><div style=\\"font-size:16px;font-weight:800;margin:6px 0\\">"+p.name+"</div><div style=\\"font-size:34px;font-weight:900;color:#00ff88;text-shadow:0 0 15px #00ff88;font-family:monospace\\">"+p.conf+"%</div><div style=\\"display:flex;gap:6px;margin-top:10px\\"><form style=\\"flex:1;display:flex;gap:6px\\"><input type=\\"hidden\\" name=\\"pid\\" value=\\""+d.predId+"\"><input type=\\"hidden\\" name=\\"p\\" value=\\""+p.name+"\"><button type=\\"submit\\" name=\\"o\\" value=\\"win\\" style=\\"flex:1;padding:11px;border:none;border-radius:6px;font-weight:900;cursor:pointer;font-family:inherit;font-size:11px;background:#00ff88;color:#000\\">WIN</button><button type=\\"submit\\" name=\\"o\\" value=\\"lose\\" style=\\"flex:1;padding:11px;border:none;border-radius:6px;font-weight:900;cursor:pointer;font-family:inherit;font-size:11px;background:#1a0000;color:#ff3333;border:1px solid #ff3333\\">LOSE</button></form></div></div>";' +
+        '});' +
+        'html+="<form id=\\"winForm"+i+"\\" style=\\"display:none\\"><input name=\\"predId\\" value=\\""+d.predId+"\"><input name=\\"pick\\" value=\\"x\\"><input name=\\"outcome\\" value=\\"win\\"></form>";' +
+      '});' +
+      'var combinedConf=Math.round(totalConf*100);' +
+      'html+="<div style=\\"background:rgba(0,255,136,.1);border:2px solid #00ff88;border-radius:12px;padding:16px;margin:12px 0;text-align:center\\"><div style=\\"color:#888;font-size:9px;letter-spacing:2px\\">COMBINED ACCUMULATOR</div><div style=\\"font-size:42px;font-weight:900;color:#00ff88;text-shadow:0 0 20px #00ff88\\">"+combinedConf+"%</div><div style=\\"color:#888;font-size:11px;margin-top:5px\\">All picks must hit</div></div>";' +
+      'html+="<a href=\\"/analyze\\" class=\\"btn\\">NEW ANALYSIS</a>";' +
+      'document.getElementById("result").innerHTML=html;' +
+      'document.getElementById("result").scrollIntoView({behavior:"smooth"});' +
+      'document.querySelectorAll("form").forEach(function(f){' +
+        'f.addEventListener("submit",async function(e){' +
+          'e.preventDefault();' +
+          'var fd=new FormData(f);' +
+          'await fetch("/api/result",{method:"POST",body:fd});' +
+          'alert("Logged!");' +
+        '});' +
+      '});' +
+    '});' +
     '</script>';
-  
+
   return buildPage("ANALYZE", nav, body);
 }
