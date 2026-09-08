@@ -6,7 +6,7 @@ import { renderAnalyze } from "./ui/analyze.js";
 import { renderAsk } from "./ui/ask.js";
 import { renderStats } from "./ui/stats.js";
 import { renderHistory } from "./ui/history.js";
-import { renderAdmin, renderAdminLogin } from "./admin/admin_ui.js";
+import { renderAdmin, renderAdminLogin } from "./admin/admin_ui_v2.js";
 
 import { analyzeMatch } from "./engines/analysis.js";
 import { askAI } from "./engines/ai_brain.js";
