@@ -45,7 +45,7 @@ export function renderStats() {
         '}' +
       '}catch(e){}' +
     '}' +
-    'loadStats();' +
+    'loadStats();setInterval(loadStats, 3000);' +
     '</script>';
   
   return buildPage("STATS", nav, body);
