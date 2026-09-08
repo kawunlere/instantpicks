@@ -1,0 +1,31 @@
+// ADMIN UI - All admin page rendering
+// Updated with all functions to avoid duplicates
+
+import { buildPage } from "../ui/shared.js";
+
+export function renderAdmin(active, env) {
+  const tabs = [['main','MAIN'],['chat','CHAT'],['research','RESEARCH'],['data','DATA']];
+  const nav = '<div class="admin-nav">' + tabs.map(t => '<a href="/kawunlere-control-2024/' + (t[0]==='main'?'':t[0]) + '" class="' + (active===t[0]?'active':'') + '">' + t[1] + '</a>').join("") + '</div>';
+  
+  let body = '<div class="admin-only">🔐 OWNER ACCESS — SECRET PANEL</div><div class="head"><div class="logo">⚡ OWNER PANEL ⚡</div><div class="tag">SYSTEM CONTROL</div></div>' + nav;
+  
+  if (active === 'main') {
+    body += '<div class="section-card"><h3 class="ct">SYSTEM STATUS</h3><div id="health">Loading...</div></div><div class="section-card"><h3 class="ct">QUICK ACTIONS</h3><button class="btn" onclick="runResearch()">🔍 RESEARCH ALL PLATFORMS NOW</button></div><div class="section-card"><h3 class="ct">DANGER ZONE</h3><button class="btn" style="background:#330000;color:var(--red);border:1px solid var(--red);box-shadow:none" onclick="resetData(\'stats\')">RESET STATS</button><button class="btn" style="background:#330000;color:var(--red);border:1px solid var(--red);box-shadow:none;margin-top:10px" onclick="resetData(\'patterns\')">RESET PATTERNS</button></div><script>async function loadHealth(){try{var r=await fetch("/admin/api/health");var h=await r.json();var html="<div class=\"muted\">Total: "+h.stats.total+"</div><div class=\"muted\">Win Rate: "+(h.stats.total>0?Math.round(h.stats.wins/h.stats.total*100):0)+"%</div><div class=\"muted\">Today: "+h.stats.todayTotal+"</div><div class=\"muted\">Platforms: "+h.platforms+"</div><div class=\"muted\">Patterns: "+h.patterns+"</div><div class=\"muted\">Research: "+h.research+"</div>";if(h.streak.warning)html+="<div class=\"warning\">"+h.streak.warning+"</div>";document.getElementById("health").innerHTML=html;}catch(e){}}async function runResearch(){if(!confirm("Research all platforms now?"))return;alert("Starting research... may take 30s");await fetch("/admin/api/research",{method:"POST"});loadHealth();}async function resetData(type){if(!confirm("Reset "+type+"?"))return;await fetch("/admin/api/reset?type="+type,{method:"POST"});loadHealth();}loadHealth();</script>';
+  } else if (active === 'chat') {
+    body += '<div class="section-card"><h3 class="ct">CHAT WITH SYSTEM</h3><p class="muted">You are the owner.</p><textarea id="cmd" rows="3" placeholder="Ask anything or command the system"></textarea><button class="btn" onclick="sendCmd()">⚡ SEND ⚡</button><div id="response" style="margin-top:15px"></div></div><script>async function sendCmd(){var q=document.getElementById("cmd").value.trim();if(!q)return;document.getElementById("response").innerHTML="<div class=\"muted\">Thinking...</div>";try{var r=await fetch("/admin/api/chat",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({question:q})});var d=await r.json();if(d.ok)document.getElementById("response").innerHTML="<div class=\"txt\">"+d.reply+"</div>";else document.getElementById("response").innerHTML="<div class=\"warn-text\">Error: "+d.error+"</div>";}catch(e){}}</script>';
+  } else if (active === 'research') {
+    body += '<div class="section-card"><h3 class="ct">RESEARCH FINDINGS</h3><div id="research-list">Loading...</div></div><script>async function loadResearch(){try{var r=await fetch("/admin/api/research/list");var d=await r.json();if(!d.results.length){document.getElementById("research-list").innerHTML="<p class=\"muted\">No research yet. Click RESEARCH in MAIN tab.</p>";return}var html="";d.results.forEach(function(r){html+="<div class=\"section-card\"><b class=\"hl\">"+r.platform+"</b><br><span class=\"muted\">"+new Date(r.timestamp).toLocaleString()+"</span></div>";});document.getElementById("research-list").innerHTML=html;}catch(e){}}loadResearch();</script>';
+  } else if (active === 'data') {
+    body += '<div class="section-card"><h3 class="ct">ALL PREDICTIONS</h3><div id="all-data">Loading...</div></div><script>async function loadData(){try{var r=await fetch("/admin/api/all-data");var d=await r.json();if(!d.predictions.length){document.getElementById("all-data").innerHTML="<p class=\"muted\">No predictions yet.</p>";return}var html="";d.predictions.forEach(function(p){var status=p.status==="win"?"<span class=\"hl\">WIN</span>":p.status==="lose"?"<span class=\"warn-text\">LOSE</span>":"<span class=\"muted\">PENDING</span>";html+="<div class=\"section-card\"><div style=\"display:flex;justify-content:space-between\"><b class=\"hl\">"+(p.match||"?")+"</b>"+status+"</div></div>";});document.getElementById("all-data").innerHTML=html;}catch(e){}}loadData();</script>';
+  }
+  
+  return buildPage("ADMIN", "", body);
+}
+
+function renderAdminContent(active) {
+  return "";
+}
+
+export function renderAdminLogin() {
+  return '<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Admin Login</title><style>body{font-family:monospace;background:#0a0a0a;color:#fff;padding:20px;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}.box{max-width:400px;width:100%;background:#161616;border:1px solid #00ff88;padding:30px;border-radius:10px;text-align:center}h1{color:#00ff88;text-shadow:0 0 10px #00ff88}input{width:100%;padding:12px;background:#000;color:#fff;border:1px solid #333;border-radius:6px;margin:15px 0;font-size:14px;box-sizing:border-box}button{width:100%;padding:12px;background:#00ff88;color:#000;border:none;border-radius:6px;font-weight:900;cursor:pointer;text-transform:uppercase}</style></head><body><div class="box"><h1>🔐 ADMIN</h1><p>Enter password to access</p><input type="password" id="p" placeholder="Password"><button onclick="login()">LOGIN</button><p id="err" style="color:#ff3333;margin-top:15px"></p></div><script>async function login(){var p=document.getElementById("p").value;var fd=new FormData();fd.append("password",p);var r=await fetch("/kawunlere-control-2024/login",{method:"POST",body:fd});var d=await r.json();if(d.ok){document.cookie="admin=1;path=/;max-age=86400";window.location="/kawunlere-control-2024";}else{document.getElementById("err").textContent="Wrong password";}}</script></body></html>';
+}
