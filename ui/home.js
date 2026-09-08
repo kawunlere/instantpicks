@@ -2,7 +2,7 @@
 import { getNav, buildPage } from "./shared.js";
 import { getAllPlatforms } from "../engines/platforms.js";
 
-export function renderAnalyze() {
+export function renderHome() {
   const nav = getNav("analyze");
   const platforms = getAllPlatforms();
   const platformOptions = platforms.map(p => '<option value="' + p.id + '">' + p.name + ' — ' + p.game + '</option>').join("");
