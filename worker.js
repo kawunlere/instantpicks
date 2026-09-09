@@ -61,7 +61,7 @@ async function apiMines(request, env) {
       client_seed: form.get("client_seed") || "",
       num_mines: form.get("num_mines") || "3"
     };
-    var result = await analyzeMines(env, data);
+    var result = await analyzeMines(env, data); console.log("MINES DEBUG:", JSON.stringify(data));
     return json(result);
   } catch (e) {
     return json({ ok: false, error: e.message });
