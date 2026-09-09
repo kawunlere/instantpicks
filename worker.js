@@ -225,3 +225,4 @@ async function adminLogin(request) {
   var form = await request.formData();
   return new Response(JSON.stringify({ ok: form.get("password") === ADMIN_PASS }), { status: form.get("password") === ADMIN_PASS ? 200 : 401, headers: { "Content-Type": "application/json" } });
 }
+ 
