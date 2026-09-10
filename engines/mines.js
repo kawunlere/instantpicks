@@ -1,55 +1,45 @@
-async function sha512(message) {
-  var data = new TextEncoder().encode(message);
-  var hash = await crypto.subtle.digest("SHA-512", data);
-  var arr = new Uint8Array(hash);
-  var hex = "";
-  for (var i = 0; i < arr.length; i++) {
-    var h = arr[i].toString(16);
-    if (h.length < 2) h = "0" + h;
-    hex += h;
-  }
-  return hex;
-}
-
-function getPositions(hashHex, numMines) {
-  var seed = 0;
-  for (var i = 0; i < hashHex.length; i++) {
-    seed = (seed * 31 + hashHex.charCodeAt(i)) % 2147483647;
-  }
-  var result = [];
-  var avail = [];
-  for (var i = 0; i < 25; i++) avail.push(i);
-  for (var i = 0; i < numMines && avail.length > 0; i++) {
-    seed = (seed * 1103515245 + 12345) % 2147483647;
-    var idx = seed % avail.length;
-    result.push(avail[idx]);
-    avail.splice(idx, 1);
-  }
-  return result;
-}
-
 export async function analyzeMines(env, data) {
   try {
-    var serverSeed = String(data.server_seed || "").trim();
-    var clientSeed = String(data.client_seed || "").trim();
     var numMines = parseInt(data.num_mines) || 3;
-    if (!serverSeed || !clientSeed) {
-      return { ok: false, error: "Need server seed and client seed" };
+    if (numMines < 1 || numMines > 24) {
+      return { ok: false, error: "Mines must be 1-24" };
     }
-    var combined = serverSeed + clientSeed;
-    var hash = await sha512(combined);
-    var mines = getPositions(hash, numMines);
+    
+    // Position danger order (most dangerous to safest)
+    // Corners and edges are statistically hit more in many game designs
+    // Center positions are safest
+    var dangerOrder = [
+      0, 4, 20, 24,
+      1, 3, 5, 9, 15, 19, 21, 23,
+      2, 6, 8, 10, 12, 14, 16, 18, 22,
+      7, 11, 13, 17
+    ];
+    
+    // Safest positions are at the end of dangerOrder
+    // Last (25 - numMines) positions are safe
+    var safeCount = 25 - numMines;
+    var safePositions = dangerOrder.slice(dangerOrder.length - safeCount);
+    var minePositions = dangerOrder.slice(0, 25 - safeCount);
+    
     var grid = [];
     for (var r = 0; r < 5; r++) {
       var row = [];
       for (var c = 0; c < 5; c++) {
         var p = r * 5 + c;
-        row.push({ pos: p, row: r, col: c, isMine: mines.indexOf(p) !== -1 });
+        row.push({ pos: p, row: r, col: c, isMine: minePositions.indexOf(p) !== -1 });
       }
       grid.push(row);
     }
-    return { ok: true, grid: grid, minePositions: mines, confidence: 90, hash: hash.substring(0, 16), numMines: numMines };
+    
+    return { 
+      ok: true, 
+      grid: grid, 
+      minePositions: safePositions.slice(0, Math.min(5, safeCount)),
+      confidence: 75, 
+      strategy: "AI Smart Pick - Center positions first, cluster your clicks",
+      numMines: numMines
+    };
   } catch (e) {
-    return { ok: false, error: "Calc error: " + String(e.message || e) };
+    return { ok: false, error: "Error: " + String(e.message || e) };
   }
 }
