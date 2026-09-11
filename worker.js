@@ -3,13 +3,11 @@ import { renderAnalyze } from "./ui/analyze.js";
 import { renderAsk } from "./ui/ask.js";
 import { renderStats } from "./ui/stats.js";
 import { renderHistory } from "./ui/history.js";
-import { renderMines } from "./ui/mines.js";
 import { analyzeMatch } from "./engines/analysis.js";
 import { askAI } from "./engines/ai_brain.js";
 import { recordResult, getStreakInfo } from "./engines/patterns.js";
 import { runResearch, getAllResearch } from "./engines/research.js";
 import { getAllPlatforms } from "./engines/platforms.js";
-import { analyzeMines } from "./engines/mines.js";
 
 const ADMIN_PASS = "kawunlere2024";
 const ADMIN_SECRET_PATH = "/kawunlere-control-2024";
@@ -28,7 +26,6 @@ export default {
     if (path === "/ask") return html(renderAsk());
     if (path === "/dashboard" || path === "/stats") return html(renderStats());
     if (path === "/history") return html(renderHistory());
-    if (path === "/mines") return html(renderMines());
     if (path === "/kawunlere-control-2024" || path === "/kawunlere-control-2024/") return checkAdmin(request, "main");
     if (path === "/kawunlere-control-2024/chat") return checkAdmin(request, "chat");
     if (path === "/kawunlere-control-2024/research") return checkAdmin(request, "research");
@@ -40,7 +37,6 @@ export default {
     if (path === "/api/stats") return await apiStats(env);
     if (path === "/api/predictions") return await apiPredictions(env);
     if (path === "/api/ask" && request.method === "POST") return json(await apiAsk(request, env));
-    if (path === "/api/mines" && request.method === "POST") return json(await apiMines(request, env));
 
     if (path === "/admin/api/health") return json(await adminHealth(env));
     if (path === "/admin/api/research" && request.method === "POST") return json(await runResearch(env));
@@ -61,7 +57,6 @@ async function apiMines(request, env) {
       client_seed: form.get("client_seed") || "",
       num_mines: form.get("num_mines") || "3"
     };
-    var result = await analyzeMines(env, data); console.log("MINES DEBUG:", JSON.stringify(data));
     return json(result);
   } catch (e) {
     return json({ ok: false, error: e.message });
